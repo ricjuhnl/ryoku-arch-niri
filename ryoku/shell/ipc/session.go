@@ -5,18 +5,16 @@ import (
 	"log"
 	"os/exec"
 	"strings"
+
+	wm "ryoku-wm"
 )
 
-// session.go runs the session power actions the confirmation dialog triggers:
-// logout, reboot, and shutdown. Each maps to the documented systemctl
-// invocation and is fire-and-forget, matching the reference's three helper
-// functions (spawn a process, log a non-zero exit, never block the caller).
-// Reboot and poweroff tear the session down, so the reply is best-effort.
+// session.go runs the session power actions the confirmation dialog triggers.
+// Reboot and shutdown are system-level, so they go through systemctl. Logout
+// ends the session by asking the compositor to exit, through the wm seam.
 //
-// There is deliberately no suspend action: the reference tree has none (no
-// suspend helper, no quick-action, no systemctl suspend), so Ryoku adds none.
+// There is deliberately no suspend action: the reference tree has none.
 var sessionActions = map[string][]string{
-	"logout":   {"systemctl", "--user", "exit"},
 	"reboot":   {"systemctl", "reboot"},
 	"shutdown": {"systemctl", "poweroff"},
 }
@@ -29,11 +27,15 @@ func sessionActionArgv(action string) ([]string, bool) {
 	return argv, ok
 }
 
-// startSession registers the session power-action calls. QML's confirmation
-// dialog invokes `call session.<action>` once the user confirms; the daemon runs
-// the documented systemctl command. Registration only: no process is spawned
-// here, so it is always safe to wire in.
+// startSession registers the session power-action calls the confirmation dialog
+// invokes. Registration only: no process is spawned here.
 func (d *daemon) startSession() {
+	d.registerCall("session.logout", func(json.RawMessage) (any, error) {
+		if err := d.wmc.Act(wm.ActionSessionExit); err != nil {
+			log.Printf("ryoku-shell: session logout: %v", err)
+		}
+		return map[string]any{"ok": true}, nil
+	})
 	for action := range sessionActions {
 		action := action
 		d.registerCall("session."+action, func(json.RawMessage) (any, error) {

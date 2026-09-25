@@ -5,7 +5,46 @@ for finer detail.
 
 ## Unreleased
 
+### Fixed
+- The desktop behaves the same on niri as on Hyprland: the night light, window
+  borders, the app and brightness keybinds, the colour picker, the recorder and
+  the launcher tools, idle management, the lid policy and Super+P all work on a
+  packaged niri box, and Ryoku Hub offers niri's own customization (blur,
+  frames, animations, layer rules, input tuning) with no Hyprland-only controls
+  or wording. The dev deploy now lays only the live compositor's scripts, so a
+  checkout no longer hides what a package is missing.
+- Project documentation now uses the Ryoku name and the canonical
+  `ryoku-dev/ryoku` repository URL.
+- The Now playing widget now respects Power Saver, reduced motion, and the shared
+  audio-animation policy instead of keeping its private waveform and decorative
+  animations running. Song information and playback controls remain available.
+- Ryotunes installs and upgrades now use the official epoch-1 release instead of
+  the retired `2.5.1` distro build. Both developer and packaged desktops restore
+  a missing installation through the verified release channel.
+- The signed pacman repository imports the same official package without
+  rebuilding it. An hourly catch-up and a post-publication refresh keep both
+  mutable channels current without changing frozen distro snapshots.
+
 ### Added
+- **Plain-language GitHub release notes, generated from commit notes.** A change
+  users notice gets a `Note: New|Fixed|Removed: ...` trailer on its commit;
+  `bin/ryoku-release-notes` collects these between releases and the
+  `release-notes.yml` bot publishes them as a formatted GitHub Release, with
+  optional demo gifs (`| release/media/...`). A stable `v*` tag becomes a full
+  release; each unstable-dev bump refreshes one rolling `unstable` pre-release.
+  The `commit-msg` and `pre-push` hooks now also hold subjects to 72 characters
+  with no trailing period and validate the trailer. A stable release is also
+  announced to Discord, reusing the existing `DISCORD_WEBHOOK_URL` secret: the
+  published GitHub changelog is posted verbatim in a branded embed (wordmark
+  banner, logo mark, brand footer). The rolling `unstable` pre-release is not
+  announced, to keep the channel quiet. See `CONTRIBUTING.md`.
+- **The wallpaper picker's hex layout gains geometric tile families and field
+  curves.** The picker can now lay its cards as hexagons, triangles, diamonds or
+  rhombi, and bend the column field into a plane, a bow, a ribbon or an S-sweep,
+  with adjustable bend strength and wave count. Tile geometry, hover hit-testing
+  and grid metrics follow the chosen shape, so cards line up and only their own
+  glass area responds to the pointer. Ported from skwd-wall v2. Set it in the
+  wallpaper picker's Selector settings (Field curve, Tile family).
 - **User edits live in a `user_edits` overlay, separate from Ryoku-owned config.**
   `~/.config/ryoku/user_edits` mirrors `~/.config` and is laid over the base on
   every `ryoku materialize`/deploy, so a file there wins while the base (the
@@ -45,6 +84,16 @@ for finer detail.
   example.
 
 ### Fixed
+- The visualizer now accounts for hitbox rotation when determining its placement
+  area and allows deliberate edge overhang through the `overhang` property.
+- The overview's new-workspace controls now allocate workspace ids globally, so
+  clicking `+` or `NEW` on a secondary monitor creates the workspace on that
+  monitor instead of jumping to an existing workspace on another output.
+- `ryoku doctor` no longer re-writes the SDDM greeter config when it's already
+  correct: `readFileSafe` strips the trailing newline on read-back while the
+  expected body kept one, so a byte-correct file always looked out of date and
+  the sudo rewrite failed silently when no TTY was available. The comparison
+  now ignores the trailing newline.
 - Limine now shows the generated boot menu: the branded config moved from
   `/boot/limine/limine.conf` (which Limine scans first, shadowing everything
   `limine-entry-tool` generates into `/boot/limine.conf`: the UKI tree and the

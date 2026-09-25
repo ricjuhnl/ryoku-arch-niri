@@ -12,6 +12,9 @@ import (
 	"ryoku-cli/internal/sys"
 	"strings"
 	"time"
+
+	i18n "ryoku-i18n"
+	wm "ryoku-wm"
 )
 
 // `ryoku doctor --explain` = the reasoning layer over the deterministic
@@ -29,15 +32,22 @@ const (
 	defaultAIModel    = "llama-3.3-70b-versatile"
 )
 
-// aiSystemPrompt: compact framing so the model knows the system it's
-// diagnosing and what to produce. short on purpose -- the report is the data.
-const aiSystemPrompt = "You are the diagnostic brain for Ryoku, an Arch-based Linux distro running the " +
-	"Hyprland Wayland compositor (btrfs root with snapper; the `ryoku` CLI manages updates, snapshots, and " +
-	"config). You are given a `ryoku doctor` report: deterministic findings plus system state (btrfs, " +
-	"packages, services, journal errors, and hardware: GPU and backlight). Name the single most likely root " +
-	"cause and give the exact, safe fix, preferring precise shell commands. When the cause is hardware, " +
-	"firmware, or BIOS, say so plainly: software cannot fix it, so tell the user what to change. Never give a " +
-	"destructive command without a clear warning. Be brief: lead with the cause, then the fix."
+// aiSystemPrompt frames the system for the model, naming the compositor from the
+// detected provider so the advice fits the box actually running. short on
+// purpose -- the report is the data.
+func aiSystemPrompt() string {
+	comp := "a Wayland compositor"
+	if n := wm.Detect().Name; n != "" {
+		comp = "the " + n + " Wayland compositor"
+	}
+	return "You are the diagnostic brain for Ryoku, an Arch-based Linux distro running " + comp +
+		" (btrfs root with snapper; the `ryoku` CLI manages updates, snapshots, and " +
+		"config). You are given a `ryoku doctor` report: deterministic findings plus system state (btrfs, " +
+		"packages, services, journal errors, and hardware: GPU and backlight). Name the single most likely root " +
+		"cause and give the exact, safe fix, preferring precise shell commands. When the cause is hardware, " +
+		"firmware, or BIOS, say so plainly: software cannot fix it, so tell the user what to change. Never give a " +
+		"destructive command without a clear warning. Be brief: lead with the cause, then the fix."
+}
 
 func aiKey() string {
 	if k := strings.TrimSpace(os.Getenv("RYOKU_AI_KEY")); k != "" {
@@ -60,19 +70,19 @@ func envOr(key, def string) string {
 func explainSetupHelp() {
 	p := func(f string, a ...any) { fmt.Printf(f+"\n", a...) }
 	fmt.Println()
-	p("  %s reasons over the report with a cloud model.", sys.Brand("ryoku doctor --explain"))
-	p("  %s", sys.Dim("It needs a free API key (your own, opt-in: nothing is sent without it)."))
+	p(i18n.T("  %s reasons over the report with a cloud model."), sys.Brand("ryoku doctor --explain"))
+	p("  %s", sys.Dim(i18n.T("It needs a free API key (your own, opt-in: nothing is sent without it).")))
 	fmt.Println()
-	p("  %s %s", sys.Bold("Groq"), sys.Dim("(recommended, fast and free)"))
-	p("    1. get a key:  %s", sys.Brand("https://console.groq.com/keys"))
-	p("    2. export RYOKU_AI_KEY=...   %s", sys.Dim("or write it to ~/.config/ryoku/ai-key"))
+	p("  %s %s", sys.Bold("Groq"), sys.Dim(i18n.T("(recommended, fast and free)")))
+	p(i18n.T("    1. get a key:  %s"), sys.Brand("https://console.groq.com/keys"))
+	p("    2. export RYOKU_AI_KEY=...   %s", sys.Dim(i18n.T("or write it to ~/.config/ryoku/ai-key")))
 	fmt.Println()
-	p("  %s %s", sys.Bold("OpenRouter"), sys.Dim("(free models)"))
-	p("    export RYOKU_AI_KEY=...      %s", sys.Dim("from https://openrouter.ai/keys"))
+	p("  %s %s", sys.Bold("OpenRouter"), sys.Dim(i18n.T("(free models)")))
+	p("    export RYOKU_AI_KEY=...      %s", sys.Dim(i18n.T("from https://openrouter.ai/keys")))
 	p("    export RYOKU_AI_URL=https://openrouter.ai/api/v1")
 	p("    export RYOKU_AI_MODEL=meta-llama/llama-3.3-70b-instruct:free")
 	fmt.Println()
-	p("  %s", sys.Dim("Default model: "+defaultAIModel+" (override with RYOKU_AI_MODEL)."))
+	p("  %s", sys.Dim(i18n.Tf("Default model: %s (override with RYOKU_AI_MODEL).", defaultAIModel)))
 }
 
 func explainFindings(findings []finding) error {
@@ -80,7 +90,7 @@ func explainFindings(findings []finding) error {
 	if key == "" {
 		explainSetupHelp()
 		if path, err := writeReport("", findings); err == nil {
-			fmt.Printf("\nThe full report is at %s; you can also paste it into any assistant yourself.\n", path)
+			fmt.Printf(i18n.T("\nThe full report is at %s; you can also paste it into any assistant yourself.\n"), path)
 		}
 		return nil
 	}
@@ -88,13 +98,13 @@ func explainFindings(findings []finding) error {
 	model := envOr("RYOKU_AI_MODEL", defaultAIModel)
 	report := gatherReport(findings)
 
-	fmt.Fprintf(os.Stderr, "\n  %s asking %s to diagnose %s\n", sys.Brand("➜"), sys.Bold(model), sys.Dim("(advisory, read-only; nothing runs)"))
+	fmt.Fprintf(os.Stderr, i18n.T("\n  %s asking %s to diagnose %s\n"), sys.Brand("➜"), sys.Bold(model), sys.Dim(i18n.T("(advisory, read-only; nothing runs)")))
 	answer, err := aiDiagnose(endpoint, key, model, report)
 	if err != nil {
 		path, _ := writeReport("", findings)
-		return fmt.Errorf("AI request failed: %v\n    The report is at %s; paste it into any assistant.", err, path)
+		return fmt.Errorf(i18n.T("AI request failed: %v\n    The report is at %s; paste it into any assistant."), err, path)
 	}
-	fmt.Printf("\n%s\n\n%s\n", sys.Brand("➜ AI diagnosis"), answer)
+	fmt.Printf("\n%s\n\n%s\n", sys.Brand("➜ "+i18n.T("AI diagnosis")), answer)
 	return nil
 }
 
@@ -124,7 +134,7 @@ func aiDiagnose(endpoint, key, model, report string) (string, error) {
 	body, err := json.Marshal(aiRequest{
 		Model: model,
 		Messages: []aiMessage{
-			{Role: "system", Content: aiSystemPrompt},
+			{Role: "system", Content: aiSystemPrompt()},
 			{Role: "user", Content: "Diagnose this machine and tell me how to fix it:\n\n" + report},
 		},
 	})
@@ -150,13 +160,13 @@ func aiDiagnose(endpoint, key, model, report string) (string, error) {
 
 	var ar aiResponse
 	if err := json.Unmarshal(raw, &ar); err != nil {
-		return "", fmt.Errorf("unexpected response (HTTP %d)", resp.StatusCode)
+		return "", fmt.Errorf(i18n.T("unexpected response (HTTP %d)"), resp.StatusCode)
 	}
 	if ar.Error != nil && ar.Error.Message != "" {
 		return "", fmt.Errorf("%s", ar.Error.Message)
 	}
 	if len(ar.Choices) == 0 || strings.TrimSpace(ar.Choices[0].Message.Content) == "" {
-		return "", fmt.Errorf("no answer returned (HTTP %d)", resp.StatusCode)
+		return "", fmt.Errorf(i18n.T("no answer returned (HTTP %d)"), resp.StatusCode)
 	}
 	return strings.TrimSpace(ar.Choices[0].Message.Content), nil
 }

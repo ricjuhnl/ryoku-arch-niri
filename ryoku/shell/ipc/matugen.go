@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	wm "ryoku-wm"
 )
 
 // matugen.go is the dynamic colour pipeline and the sole renderer of the
@@ -386,13 +388,14 @@ func syncFollowWallpaper(themeName string) {
 	if b, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(b, &doc)
 	}
-	// Only the Wallpaper variant drives the live pipeline. Default is the
-	// monochrome base (the shell's compiled palette -- the shipped default and
-	// the Appearance MONO card), and every named theme owns a fixed palette;
-	// none of them follow the wallpaper, so their shadow key is off. This matches
-	// the fresh-install state (theme.theme "Default", no theme.json -> Match
-	// wallpaper off) instead of fighting it the moment the picker is touched.
-	follow := themeName == "Wallpaper"
+	// Colours follow the wallpaper by default. Only a named static theme, or an
+	// explicit Light / Dark curated lock, pins a fixed palette; the plain base
+	// (Default or Wallpaper) always follows, so a fresh desktop -- and any box
+	// that lands back on Default -- tracks the wallpaper instead of the shipped
+	// brand palette. theme.theme is the master; this is its shadow.
+	scheme, _ := doc["scheme"].(string)
+	locked := scheme == "light" || scheme == "dark"
+	follow := !staticName(themeName) && !locked
 	if cur, ok := doc["followWallpaper"].(bool); ok && cur == follow {
 		return
 	}
@@ -416,6 +419,69 @@ func matchWallpaperOn() bool {
 		return true
 	}
 	return *s.FollowWallpaper
+}
+
+// gtkThemeSetting reads theme.json's gtkTheme knob (contract C3): "adw" (the
+// default), "adwaita", or "system". An absent, malformed, or unrecognised value
+// reads as "adw" -- the adw-gtk3 base whose rules derive from the accent, so the
+// palette actually lands, unlike stock Adwaita GTK3 which hardcodes its colours.
+// theme.json is the one control-plane file the daemon reads directly.
+func gtkThemeSetting() string {
+	b, err := os.ReadFile(filepath.Join(ryokuConfigDir(), "theme.json"))
+	if err != nil {
+		return "adw"
+	}
+	s := struct {
+		GtkTheme string `json:"gtkTheme"`
+	}{}
+	if json.Unmarshal(b, &s) != nil {
+		return "adw"
+	}
+	switch s.GtkTheme {
+	case "adw", "adwaita", "system":
+		return s.GtkTheme
+	}
+	return "adw"
+}
+
+// resolveGtkTheme turns the gtkTheme knob and the resolved light/dark mode into
+// the gsettings gtk-theme name the daemon sets, or "" for "system" -- where the
+// user owns gtk-theme and Ryoku never writes it. The variant must match the mode
+// so a light/dark flip lands on the right stylesheet (adw-gtk3 vs adw-gtk3-dark),
+// since the base carries the accent-derived rules the palette rides on.
+func resolveGtkTheme(mode string) string {
+	dark := mode != "light"
+	switch gtkThemeSetting() {
+	case "system":
+		return ""
+	case "adwaita":
+		if dark {
+			return "Adwaita-dark"
+		}
+		return "Adwaita"
+	default: // "adw"
+		if dark {
+			return "adw-gtk3-dark"
+		}
+		return "adw-gtk3"
+	}
+}
+
+// gnomeAccentOn reports whether Ryoku tracks the palette onto GNOME's named
+// accent (contract C3, default true). Off leaves org.gnome.desktop.interface
+// accent-color untouched so a user's own choice stands.
+func gnomeAccentOn() bool {
+	b, err := os.ReadFile(filepath.Join(ryokuConfigDir(), "theme.json"))
+	if err != nil {
+		return true
+	}
+	s := struct {
+		GnomeAccent *bool `json:"gnomeAccent"`
+	}{}
+	if json.Unmarshal(b, &s) != nil || s.GnomeAccent == nil {
+		return true
+	}
+	return *s.GnomeAccent
 }
 
 // staticThemeName returns the fixed named theme selected in shell.json, or ""
@@ -486,6 +552,13 @@ func (d *daemon) matugenApply(img string) error {
 	if err := writeJSONFile(matugenColorsPath(), matugenColorsJSON(pal)); err != nil {
 		return fmt.Errorf("matugen colors.json: %w", err)
 	}
+
+	// Retint the Material pointer now, parallel with the template fan-out below,
+	// so it tracks the wallpaper as promptly as the bar instead of waiting on
+	// matugen's post_hook (which runs only after every template has rendered). It
+	// reads the colors.json just written; a no-op unless the Material cursor is
+	// selected, and its own lock makes the post_hook's later run idempotent.
+	go func() { _ = runCommand("ryoku-cursor-material-recolor") }()
 
 	// And the tonal ramps behind those roles, from the same run.
 	if tones != nil {
@@ -560,15 +633,13 @@ func matugenPreview(img string) error {
 		"colors": matugenColorsJSON(pal),
 		"tones":  tones,
 	}
-	if grid, ok := wallToneGrid(img); ok {
-		var sum float64
-		for _, v := range grid {
-			sum += v
+	// Merge the wallpaper tone map (grid, detail, cols, rows, lstar) through the
+	// one builder the on-disk map uses, so the preview and the published file
+	// never disagree on a cell.
+	if m, ok := wallToneMap(img); ok {
+		for k, v := range m {
+			out[k] = v
 		}
-		out["grid"] = grid
-		out["cols"] = wallToneCols
-		out["rows"] = wallToneRows
-		out["lstar"] = round2(sum / float64(len(grid)))
 	}
 	return json.NewEncoder(os.Stdout).Encode(out)
 }
@@ -934,6 +1005,7 @@ func matugenCarrier(pal map[string]string) map[string]any {
 			g, _ = strconv.ParseInt(stripped[2:4], 16, 0)
 			b, _ = strconv.ParseInt(stripped[4:6], 16, 0)
 		}
+		h, s, l := rgbToHSL(r, g, b)
 		co := map[string]any{
 			"hex":          hex,
 			"hex_stripped": stripped,
@@ -941,6 +1013,10 @@ func matugenCarrier(pal map[string]string) map[string]any {
 			"green":        strconv.FormatInt(g, 10),
 			"blue":         strconv.FormatInt(b, 10),
 			"rgb":          fmt.Sprintf("%d, %d, %d", r, g, b),
+			"hue":          strconv.Itoa(h),
+			"saturation":   strconv.Itoa(s),
+			"lightness":    strconv.Itoa(l),
+			"hsl":          fmt.Sprintf("hsl(%d, %d%%, %d%%)", h, s, l),
 		}
 		entry := map[string]any{"default": co, "dark": co, "light": co}
 		for key, val := range co {
@@ -955,6 +1031,42 @@ func matugenCarrier(pal map[string]string) map[string]any {
 	return map[string]any{"colors": colors}
 }
 
+// rgbToHSL converts an 8-bit sRGB triple to HSL as hue in degrees [0,360) and
+// saturation/lightness in whole percent, the units CSS hsl() and Obsidian's
+// --accent-h/s/l expect. The carrier is hex/rgb only in matugen json mode, so a
+// template that needs the accent as an HSL triple (Obsidian derives its whole
+// accent chain from --accent-h/s/l) gets it from here rather than a hook.
+func rgbToHSL(r, g, b int64) (int, int, int) {
+	rf, gf, bf := float64(r)/255, float64(g)/255, float64(b)/255
+	max := math.Max(rf, math.Max(gf, bf))
+	min := math.Min(rf, math.Min(gf, bf))
+	l := (max + min) / 2
+	if max == min {
+		return 0, 0, int(math.Round(l * 100)) // achromatic: hue and saturation undefined
+	}
+	d := max - min
+	var s float64
+	if l > 0.5 {
+		s = d / (2 - max - min)
+	} else {
+		s = d / (max + min)
+	}
+	var h float64
+	switch max {
+	case rf:
+		h = (gf - bf) / d
+		if gf < bf {
+			h += 6
+		}
+	case gf:
+		h = (bf-rf)/d + 2
+	default:
+		h = (rf-gf)/d + 4
+	}
+	h /= 6
+	return int(math.Round(h * 360)), int(math.Round(s * 100)), int(math.Round(l * 100))
+}
+
 // templateGroup maps a matugen template block name to its roster key, so one
 // roster toggle (e.g. "gtk", "discord", "qt") governs every block that themes
 // that app.
@@ -964,10 +1076,8 @@ func templateGroup(block string) string {
 		return "gtk"
 	case "vesktop", "equibop":
 		return "discord"
-	case "qt6ct":
+	case "qt6ct", "kde":
 		return "qt"
-	case "qt5ct":
-		return "qt5"
 	case "hypr":
 		return "hyprland"
 	default:
@@ -1016,16 +1126,77 @@ func matugenRenderTemplates(shell map[string]string, k matugenKnobs) {
 	// Absent-means-off would have kept every app added from here on dark for
 	// everyone who had ever opened the appearance page.
 	enabled := func(group string) bool {
+		if group == "steam" && !steamThemeReady() {
+			return false
+		}
 		if v, ok := k.Templates[group]; ok {
 			return v
 		}
 		return true
 	}
 	matugenRenderFiltered(filepath.Join(dir, "config.toml"), carrierPath, enabled)
-	if k.ThemeRyokuApps {
+	// Two switches gate the app suite and both have to agree: the appearance
+	// page's per-group roster (themeRyokuApps) and the master "Theme apps" in
+	// theme.json. The Hub blanks the stylesheets when the master goes off, so
+	// honouring the roster alone here re-rendered them on the next repaint and
+	// silently undid it.
+	if k.ThemeRyokuApps && themeAppsEnabled() {
 		matugenRenderFiltered(filepath.Join(dir, "apps.toml"), carrierPath, enabled)
+		// matugen wrote the shared snippet target; poke each vault's symlink so
+		// Obsidian's watcher, which never sees the out-of-vault target change,
+		// reloads the new palette without a restart.
+		if enabled("obsidian") {
+			nudgeObsidian()
+		}
 	} else {
 		blankGtk(matugenConfigHome())
+	}
+}
+
+// nudgeObsidian re-links the palette snippet inside every registered Obsidian
+// vault so the vault's file watcher fires and Obsidian reloads the freshly
+// rendered CSS. matugen writes one shared snippet target outside every vault
+// (~/.config/matugen/generated/obsidian.css); the vault holds a symlink to it,
+// and inotify on the vault's snippets directory does not follow the link, so
+// Obsidian never learns the target changed. A symlink recreated atomically
+// (temp name then rename) fires IN_MOVED_* inside the vault, which the watcher
+// does see, and leaves a symlink so the doctor's snippet check stays satisfied.
+// Only a vault whose ryoku.css is already a symlink is touched; a regular file
+// there is the user's own and left alone. Best-effort throughout: a missing
+// registry or a link that will not recreate is skipped, never surfaced, so a
+// palette apply never fails on Obsidian's account.
+func nudgeObsidian() {
+	b, err := os.ReadFile(filepath.Join(matugenConfigHome(), "obsidian", "obsidian.json"))
+	if err != nil {
+		return
+	}
+	var doc struct {
+		Vaults map[string]struct {
+			Path string `json:"path"`
+		} `json:"vaults"`
+	}
+	if json.Unmarshal(b, &doc) != nil {
+		return
+	}
+	generated := filepath.Join(matugenConfigHome(), "matugen", "generated", "obsidian.css")
+	for _, v := range doc.Vaults {
+		vault := strings.TrimSpace(v.Path)
+		if vault == "" {
+			continue
+		}
+		link := filepath.Join(vault, ".obsidian", "snippets", "ryoku.css")
+		fi, err := os.Lstat(link)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			continue // no link yet (doctor not run) or a user's own file
+		}
+		tmp := link + ".ryoku-tmp"
+		_ = os.Remove(tmp)
+		if os.Symlink(generated, tmp) != nil {
+			continue
+		}
+		if os.Rename(tmp, link) != nil {
+			_ = os.Remove(tmp)
+		}
 	}
 }
 
@@ -1067,33 +1238,323 @@ var (
 	}
 )
 
-// matugenReload nudges the toolkits to re-read the regenerated configs: the
-// libadwaita colour-scheme preference tracks light/dark, a gtk-theme flip makes
-// running GTK apps re-read the stylesheet, and SIGUSR1 reloads kitty (its
-// kitty.conf includes current-theme.conf). Hyprland is reloaded by the caller.
+// matugenReload lands the desktop settings that follow a palette: the libadwaita
+// colour-scheme preference tracks light/dark, org.gnome accent-color tracks the
+// palette's primary, gtk-theme lands the variant for the mode, and SIGUSR1
+// reloads kitty (its kitty.conf includes current-theme.conf). The daemon is the
+// single writer of the three GTK-facing gsettings keys. Hyprland is reloaded by
+// the caller.
+//
+// What this does NOT do is repaint an already-open GTK app. Measured on a bare
+// Wayland session: a running GTK 3 or GTK 4 app picks up neither a rewritten
+// ~/.config/gtk-*/gtk.css nor a changed gtk-theme, with or without an
+// xsettings-less settings.ini, so it keeps the palette it started with until it
+// restarts. The writes below are still worth making: every app launched after
+// this point is correct, and they are what an X11 or xsettings-backed session
+// needs to follow along.
 func matugenReload(mode string) {
 	scheme := "prefer-dark"
 	if mode == "light" {
 		scheme = "prefer-light"
 	}
 	_ = runCommand("gsettings", "set", "org.gnome.desktop.interface", "color-scheme", scheme)
-	matugenNudgeGtk()
+
+	applyGnomeAccent()
+	applyKdeColors()
+
+	// gtkTheme "system" (name == "") means the user owns gtk-theme, so Ryoku
+	// leaves it entirely alone. Otherwise land the variant for this mode.
+	if name := resolveGtkTheme(mode); name != "" {
+		matugenNudgeGtk(name)
+	}
 	_ = runCommand("pkill", "-USR1", "-x", "kitty")
+	nudgePalette()
 }
 
-// matugenNudgeGtk flips the GTK theme name off and back, the standard live-reload
-// signal, so a running GTK app re-reads the regenerated stylesheet.
-func matugenNudgeGtk() {
-	out, err := runCommandOutput("gsettings", "get", "org.gnome.desktop.interface", "gtk-theme")
+// nudgePalette tells the shell's bar to re-read the palette just written to
+// colors.json. The bar and frame chrome otherwise learn of a palette change only
+// through a colors.json file watch, which can miss an atomic-rename replacement
+// and strand them on a stale palette until the next change (or a manual
+// re-theme). This socket push over the bar's `theme` IpcHandler is the reliable
+// path; the file watch stays as a best-effort fallback. Fire-and-forget so a
+// restarting or absent bar never stalls the paint worker.
+func nudgePalette() {
+	go ipcCall("shell", "theme", "reload", "")
+}
+
+// applyBorderColors lands the palette's border colours on the live compositor
+// when the provider can recolour the border from the palette. It reads the roles
+// the caller just wrote to colors.json; the provider owns the colour literal
+// format and whether the store has pinned a fixed colour (then the act no-ops).
+func (d *daemon) applyBorderColors() {
+	if !d.wmc.Can(wm.CapPaletteBorder) {
+		return
+	}
+	active, inactive, ok := paletteBorderColors()
+	if !ok {
+		return
+	}
+	_ = d.wmc.Act(wm.ActionBorderColors, active, inactive)
+}
+
+// paletteBorderColors reads the active (color4) and inactive (background) border
+// roles from the palette written to colors.json.
+func paletteBorderColors() (active, inactive string, ok bool) {
+	b, err := os.ReadFile(matugenColorsPath())
+	if err != nil {
+		return "", "", false
+	}
+	var c struct {
+		Color4     string `json:"color4"`
+		Background string `json:"background"`
+	}
+	if json.Unmarshal(b, &c) != nil {
+		return "", "", false
+	}
+	if c.Color4 == "" && c.Background == "" {
+		return "", "", false
+	}
+	return c.Color4, c.Background, true
+}
+
+// matugenNudgeGtk lands gtk-theme on `want`, flipping through a placeholder first
+// so the key emits a change signal even when the name is unchanged (setting a key
+// to its current value emits nothing). The placeholder is a real, always-installed
+// theme rather than the empty string: an app launched during the flip window reads
+// an empty gtk-theme as no theme at all and renders unstyled, the documented cause
+// of libadwaita and Flatpak apps losing their styling on a retint. `want` is always
+// a concrete name here; "system" is handled by the caller not calling this at all.
+func matugenNudgeGtk(want string) {
+	placeholder := "Adwaita"
+	if want == placeholder {
+		placeholder = "Adwaita-dark"
+	}
+	_ = runCommand("gsettings", "set", "org.gnome.desktop.interface", "gtk-theme", placeholder)
+	_ = runCommand("gsettings", "set", "org.gnome.desktop.interface", "gtk-theme", want)
+}
+
+// applyGnomeAccent tracks the palette's primary onto GNOME's nine named accents
+// (org.gnome.desktop.interface accent-color), so Flatpaks and apps that read the
+// setting rather than our CSS follow the wallpaper. The primary comes from the
+// palette the pipeline just authored (~/.cache/ryoku/colors.json, the one file
+// every colours reader shares); an unreadable palette or a non-hex primary skips
+// the write rather than guessing. Gated off (gnomeAccent false) leaves the
+// user's own accent alone.
+func applyGnomeAccent() {
+	if !gnomeAccentOn() {
+		return
+	}
+	b, err := os.ReadFile(matugenColorsPath())
 	if err != nil {
 		return
 	}
-	name := strings.Trim(strings.TrimSpace(string(out)), "'")
-	if name == "" {
+	s := struct {
+		Primary string `json:"primary"`
+	}{}
+	if json.Unmarshal(b, &s) != nil {
 		return
 	}
-	_ = runCommand("gsettings", "set", "org.gnome.desktop.interface", "gtk-theme", "")
-	_ = runCommand("gsettings", "set", "org.gnome.desktop.interface", "gtk-theme", name)
+	name, ok := nearestGnomeAccent(s.Primary)
+	if !ok {
+		return
+	}
+	_ = runCommand("gsettings", "set", "org.gnome.desktop.interface", "accent-color", name)
+}
+
+// kdeglobalsPath is the file KColorScheme reads an app's colours from.
+func kdeglobalsPath() string {
+	return filepath.Join(matugenConfigHome(), "kdeglobals")
+}
+
+// matugenKdeColorsPath is the rendered colour groups waiting to be merged.
+func matugenKdeColorsPath() string {
+	return filepath.Join(matugenCacheHome(), "ryoku", "kdeglobals-colors.conf")
+}
+
+// kdeOwnedGroup reports whether a kdeglobals group is one the palette replaces.
+// Everything else in the file, the fonts, the icon theme, the widget style and
+// the dialog state KDE apps write for themselves, belongs to the user and is
+// copied through untouched.
+func kdeOwnedGroup(name string) bool {
+	return strings.HasPrefix(name, "Colors:") ||
+		strings.HasPrefix(name, "ColorEffects:") ||
+		name == "WM"
+}
+
+// applyKdeColors merges the rendered colour groups into kdeglobals. KDE apps
+// (Dolphin, Ark, Gwenview, Kate) resolve their palette through KColorScheme
+// rather than the qt6ct one, so without this they paint at Qt's defaults: on a
+// dark scheme a white view background under the scheme's light text.
+//
+// Merged rather than written over, because kdeglobals is shared with the KDE
+// apps themselves. A file that does not exist yet is fine and yields a
+// colours-only one.
+func applyKdeColors() {
+	rendered, err := os.ReadFile(matugenKdeColorsPath())
+	if err != nil {
+		return
+	}
+	existing, err := os.ReadFile(kdeglobalsPath())
+	if err != nil && !os.IsNotExist(err) {
+		return
+	}
+
+	var out []string
+	for _, group := range parseIniGroups(string(existing)) {
+		if kdeOwnedGroup(group.name) {
+			continue
+		}
+		if group.name == "General" {
+			group.rows = setIniRow(group.rows, "ColorScheme", "Ryoku")
+		}
+		out = append(out, renderIniGroup(group))
+	}
+	for _, group := range parseIniGroups(string(rendered)) {
+		out = append(out, renderIniGroup(group))
+	}
+
+	tmp := kdeglobalsPath() + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strings.Join(out, "\n")), 0o644); err != nil {
+		return
+	}
+	// Rename so a KDE app reading concurrently never sees half a palette.
+	if err := os.Rename(tmp, kdeglobalsPath()); err != nil {
+		_ = os.Remove(tmp)
+	}
+}
+
+type iniGroup struct {
+	name string
+	rows [][2]string
+}
+
+// parseIniGroups keeps group order and exact key spelling. Hand-rolled because
+// kdeglobals uses group names like [Colors:Header][Inactive] and case-sensitive
+// keys, neither of which a general INI reader round-trips.
+func parseIniGroups(s string) []iniGroup {
+	var groups []iniGroup
+	cur := -1
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(line)
+		switch {
+		case t == "" || strings.HasPrefix(t, "#"):
+		case strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]"):
+			groups = append(groups, iniGroup{name: t[1 : len(t)-1]})
+			cur = len(groups) - 1
+		case cur >= 0:
+			if k, v, ok := strings.Cut(t, "="); ok {
+				groups[cur].rows = append(groups[cur].rows, [2]string{k, v})
+			}
+		}
+	}
+	return groups
+}
+
+func setIniRow(rows [][2]string, key, value string) [][2]string {
+	for i := range rows {
+		if rows[i][0] == key {
+			rows[i][1] = value
+			return rows
+		}
+	}
+	return append(rows, [2]string{key, value})
+}
+
+func renderIniGroup(g iniGroup) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[%s]\n", g.name)
+	for _, r := range g.rows {
+		fmt.Fprintf(&b, "%s=%s\n", r[0], r[1])
+	}
+	return b.String()
+}
+
+// gnomeNamedAccents are libadwaita's nine named accents (contract C5), the only
+// values org.gnome.desktop.interface accent-color accepts. The hex is the source
+// of truth; the nearest match converts them to OKLab at compare time.
+var gnomeNamedAccents = [][2]string{
+	{"blue", "#3584e4"}, {"teal", "#2190a4"}, {"green", "#3a944a"},
+	{"yellow", "#c88800"}, {"orange", "#ed5b00"}, {"red", "#e62d42"},
+	{"pink", "#d56199"}, {"purple", "#9141ac"}, {"slate", "#6f8396"},
+}
+
+// gnomeAccentNeutralChroma is the OKLab chroma below which a primary is treated
+// as neutral. It sits above a near-grey and comfortably below every real accent
+// (slate, the least saturated, is ~0.037), so only a genuinely colourless
+// primary trips it.
+const gnomeAccentNeutralChroma = 0.03
+
+// nearestGnomeAccent maps a #rrggbb primary to the nearest of GNOME's nine named
+// accents. The enum names are hues, so the match is by OKLab hue angle: a raw
+// a/b Euclidean distance instead pulls a desaturated hue toward a lower-chroma
+// neighbour (a light salmon, hue-wise clearly orange, lands on the dark gold
+// "yellow"), which is not what the name means. A near-neutral primary has no
+// reliable hue and maps to slate, GNOME's own neutral accent -- which is also
+// the right answer for an achromatic wallpaper's neutralized (gray) palette. ok
+// is false when the primary is not a hex colour, so the caller skips the write.
+func nearestGnomeAccent(hex string) (string, bool) {
+	_, pa, pb, ok := oklab(hex)
+	if !ok {
+		return "", false
+	}
+	if math.Hypot(pa, pb) < gnomeAccentNeutralChroma {
+		return "slate", true
+	}
+	phue := math.Atan2(pb, pa)
+	best, bestDist := "", math.MaxFloat64
+	for _, acc := range gnomeNamedAccents {
+		_, aa, ab, _ := oklab(acc[1])
+		if d := hueDistance(phue, math.Atan2(ab, aa)); d < bestDist {
+			bestDist, best = d, acc[0]
+		}
+	}
+	return best, true
+}
+
+// hueDistance is the absolute angular gap between two hue angles in radians,
+// wrapped into [0, pi] so opposite sides of the wheel measure short-way round.
+func hueDistance(a, b float64) float64 {
+	d := math.Abs(a - b)
+	if d > math.Pi {
+		d = 2*math.Pi - d
+	}
+	return d
+}
+
+// oklab converts a #rrggbb colour to OKLab (L, a, b), ok=false for a non-hex
+// value. a/b are the chroma plane the accent match compares in; L is ignored
+// there (the accent names are hues, not lightnesses).
+func oklab(hex string) (l, a, b float64, ok bool) {
+	h := strings.TrimPrefix(hex, "#")
+	if len(h) != 6 {
+		return 0, 0, 0, false
+	}
+	v, err := strconv.ParseInt(h, 16, 64)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	lr := srgbToLinear(float64((v>>16)&0xff) / 255.0)
+	lg := srgbToLinear(float64((v>>8)&0xff) / 255.0)
+	lb := srgbToLinear(float64(v&0xff) / 255.0)
+	lms0 := 0.4122214708*lr + 0.5363325363*lg + 0.0514459929*lb
+	lms1 := 0.2119034982*lr + 0.6806995451*lg + 0.1073969566*lb
+	lms2 := 0.0883024619*lr + 0.2817188376*lg + 0.6299787005*lb
+	c0 := math.Cbrt(lms0)
+	c1 := math.Cbrt(lms1)
+	c2 := math.Cbrt(lms2)
+	l = 0.2104542553*c0 + 0.7936177850*c1 - 0.0040720468*c2
+	a = 1.9779984951*c0 - 2.4285922050*c1 + 0.4505937099*c2
+	b = 0.0259040371*c0 + 0.7827717662*c1 - 0.8086757660*c2
+	return l, a, b, true
+}
+
+// srgbToLinear removes the sRGB gamma from one channel, the linear input OKLab
+// needs (the inverse of srgbFromLinear).
+func srgbToLinear(c float64) float64 {
+	if c <= 0.04045 {
+		return c / 12.92
+	}
+	return math.Pow((c+0.055)/1.055, 2.4)
 }
 
 // matugenThemeSig fingerprints the settings frame's theme keys the pipeline
@@ -1117,32 +1578,55 @@ func matugenThemeSig(frame []byte) string {
 // the font to the toolkits the same way a theme change retunes them.
 func fontSig(frame []byte) string {
 	var doc struct {
-		FontFamily string `json:"fontFamily"`
+		FontFamily string  `json:"fontFamily"`
+		FontSize   float64 `json:"fontSize"`
 	}
 	if json.Unmarshal(frame, &doc) != nil {
 		return ""
 	}
-	return doc.FontFamily
+	return doc.FontFamily + "\x1f" + strconv.FormatFloat(doc.FontSize, 'f', -1, 64)
 }
 
-// applyFont pushes the chosen UI font to the toolkits so every surface matches
-// the shell without a logout: gsettings' font-name is read live by running GTK
-// apps, and the qt6ct general font is rewritten so Qt apps pick it up on their
-// next launch. Empty resolves to the shipped Space Grotesk.
-func applyFont(family string) {
-	family = strings.TrimSpace(family)
-	if family == "" {
-		family = "Space Grotesk"
+// applyFont pushes the chosen fonts to the toolkits without a logout: gsettings
+// font-name / monospace-font-name are read live by running GTK apps, the qt6ct
+// general font is rewritten for Qt's next launch, and the terminal font lands in
+// a kitty include reloaded via SIGUSR1. Empty keys resolve to the shipped faces.
+func applyFont(frame []byte) {
+	family, mono, size := fontChoice(frame)
+	sz := strconv.Itoa(size)
+	_ = runCommand("gsettings", "set", "org.gnome.desktop.interface", "font-name", family+" "+sz)
+	_ = runCommand("gsettings", "set", "org.gnome.desktop.interface", "document-font-name", family+" "+sz)
+	_ = runCommand("gsettings", "set", "org.gnome.desktop.interface", "monospace-font-name", mono+" "+sz)
+	writeQt6ctFont(family, size)
+	writeKittyFont(mono, size)
+	_ = runCommand("pkill", "-USR1", "-x", "kitty")
+}
+
+// fontChoice resolves the system font (family), the monospace face that follows
+// it, and the base size, each with a shipped fallback. One key drives both: an
+// empty family keeps the proportional UI default and a monospace terminal one.
+func fontChoice(frame []byte) (family, mono string, size int) {
+	var doc struct {
+		FontFamily string  `json:"fontFamily"`
+		FontSize   float64 `json:"fontSize"`
 	}
-	_ = runCommand("gsettings", "set", "org.gnome.desktop.interface", "font-name", family+" 11")
-	_ = runCommand("gsettings", "set", "org.gnome.desktop.interface", "document-font-name", family+" 11")
-	writeQt6ctFont(family)
+	_ = json.Unmarshal(frame, &doc)
+	if family = strings.TrimSpace(doc.FontFamily); family == "" {
+		family = "Space Grotesk"
+		mono = "SpaceMono Nerd Font"
+	} else {
+		mono = family
+	}
+	if size = int(doc.FontSize); size <= 0 {
+		size = 11
+	}
+	return
 }
 
-// writeQt6ctFont swaps the family in qt6ct's general font line, keeping the size
-// and style fields, so Qt apps under qt6ct render in the same face. Best-effort:
-// a missing file or an unexpected shape is left untouched.
-func writeQt6ctFont(family string) {
+// writeQt6ctFont swaps the family and size in qt6ct's general font line, keeping
+// the style fields, so Qt apps under qt6ct render in the same face on next
+// launch. Best-effort: a missing file or an unexpected shape is left untouched.
+func writeQt6ctFont(family string, size int) {
 	path := filepath.Join(matugenConfigHome(), "qt6ct", "qt6ct.conf")
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -1154,14 +1638,26 @@ func writeQt6ctFont(family string) {
 			continue
 		}
 		rest := strings.Trim(strings.TrimPrefix(ln, "general="), "\"")
-		parts := strings.SplitN(rest, ",", 2)
-		if len(parts) != 2 {
+		parts := strings.SplitN(rest, ",", 3)
+		if len(parts) < 3 {
 			return
 		}
-		lines[i] = "general=\"" + family + "," + parts[1] + "\""
+		lines[i] = "general=\"" + family + "," + strconv.Itoa(size) + "," + parts[2] + "\""
 		_ = os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
 		return
 	}
+}
+
+// writeKittyFont lands the mono face + size in a daemon-owned kitty include, so a
+// SIGUSR1 reload retypes the terminal without touching the shipped kitty.conf
+// (which carries `include current-font.conf`).
+func writeKittyFont(mono string, size int) {
+	dir := filepath.Join(matugenConfigHome(), "kitty")
+	if _, err := os.Stat(dir); err != nil {
+		return
+	}
+	body := "font_family " + mono + "\nfont_size " + strconv.Itoa(size) + "\n"
+	_ = os.WriteFile(filepath.Join(dir, "current-font.conf"), []byte(body), 0o644)
 }
 
 // watchMatugenKnobs retints the desktop whenever the knob store changes, so a Hub
@@ -1238,13 +1734,13 @@ func matugenEnsureDirs() {
 	cfg := matugenConfigHome()
 	cache := matugenCacheHome()
 	data := matugenDataHome()
+	home := os.Getenv("HOME")
 	for _, d := range []string{
 		filepath.Join(cache, "ryoku"),
 		filepath.Join(cache, "matugen"),
 		filepath.Join(cfg, "kitty"),
 		filepath.Join(cfg, "btop", "themes"),
 		filepath.Join(cfg, "qt6ct", "colors"),
-		filepath.Join(cfg, "qt5ct", "colors"),
 		filepath.Join(cfg, "gtk-3.0"),
 		filepath.Join(cfg, "gtk-4.0"),
 		filepath.Join(cfg, "vesktop", "themes"),
@@ -1258,15 +1754,27 @@ func matugenEnsureDirs() {
 		filepath.Join(cfg, "ghostty"),
 		filepath.Join(cfg, "micro", "colorschemes"),
 		filepath.Join(cfg, "matugen", "generated"),
-		filepath.Join(cfg, "Kvantum", "ryoku"),
 		filepath.Join(cfg, "zathura"),
 		filepath.Join(cfg, "alacritty"),
 		filepath.Join(cfg, "tmux"),
+		filepath.Join(cfg, "ryotunes", "skins", "matugen"),
 		filepath.Join(data, "TelegramDesktop", "tdata"),
-		filepath.Join(os.Getenv("HOME"), ".steam", "steam", "steamui", "skins", "Material-Theme", "css", "main", "colors"),
 	} {
 		_ = os.MkdirAll(d, 0o755)
 	}
+	if steamThemeReady() {
+		_ = os.MkdirAll(filepath.Join(home, ".steam", "steam", "steamui", "skins", "Material-Theme", "css", "main", "colors"), 0o755)
+	}
+}
+
+func steamThemeReady() bool {
+	home := os.Getenv("HOME")
+	if home == "" {
+		return false
+	}
+
+	info, err := os.Stat(filepath.Join(home, ".steam", "steam", "steamui"))
+	return err == nil && info.IsDir()
 }
 
 // writeJSONFile writes v as indented JSON atomically (temp file then rename), so

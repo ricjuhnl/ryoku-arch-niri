@@ -5,7 +5,7 @@
 # Core system
 base
 base-devel
-# rust: the shell's wallpaper daemon (awww) and other AUR dependencies are Rust
+# rust: the depth cutout worker and several AUR dependencies are Rust
 # programs, so the toolchain is part of the base set (not the optional dev
 # toolchains in dev.packages), and every Ryoku machine can always build them.
 rust
@@ -50,6 +50,10 @@ wpa_supplicant
 wireless-regdb
 # iw: ryoku-wifi-powersave (Game Mode) disables 802.11 power-save for low latency
 iw
+# nftables: fail-closed firewall backing the Connections kill switch. The helper
+# drops all non-loopback IPv4/IPv6 traffic before it asks NetworkManager to
+# deactivate managed interfaces.
+nftables
 
 # Bluetooth (BlueZ). bluetoothd is the org.bluez D-Bus daemon the shell and hub
 # Bluetooth UIs (Quickshell.Bluetooth) talk to; bluez-utils ships bluetoothctl,
@@ -83,14 +87,16 @@ rtkit
 mesa
 vulkan-icd-loader
 
-# Desktop: plain Hyprland, Xwayland, portals, polkit agent, Qt/GTK runtime
-hyprland
+# Desktop runtime: Xwayland, the GTK portal, and the Qt/GTK stack. The
+# compositor, its portal backend, and its polkit agent are compositor-specific
+# and ship with the compositor meta-package.
+# SDDM may still be built with Qt5; the greeter's native Wayland QPA plugin is
+# version-specific, so qt6-wayland alone cannot start it.
 xorg-xwayland
-hyprpolkitagent
-xdg-desktop-portal-hyprland
 xdg-desktop-portal-gtk
 xdg-user-dirs
 qt6-wayland
+qt5-wayland
 qt6ct
 adwaita-icon-theme
 # gnome-themes-extra ships the standalone Adwaita-dark GTK theme the Hyprland
@@ -113,6 +119,12 @@ flatpak
 
 # Login + lockscreen (SDDM greeter + qylock clockwork)
 sddm
+# weston: the SDDM greeter's Wayland compositor (weston --shell=kiosk). Running
+# the greeter on Wayland like the Hyprland session lets SDDM tear it down at
+# login; the old X11 greeter was orphaned when a Wayland session started and
+# kept drawing power. A Wayland greeter cannot start without it. See
+# ryoku/lockscreen/sddm/setup.
+weston
 polkit
 gnome-keyring
 qt6-declarative
@@ -141,12 +153,13 @@ grim
 playerctl
 slurp
 wl-clipboard
+wl-clip-persist
 
 # Applications
 chromium
 # firefox: the second browser, shipped so a Gecko engine is always on hand for a
 # site Chromium renders badly. It does not become the default: the `browser` role
-# in ryoku/hyprland/scripts/ryoku-app stays chromium, and Ryoku Settings ->
+# in ryoku/shell/scripts/ryoku-app stays chromium, and Ryoku Settings ->
 # App Overrides is where a user repoints the launcher key.
 firefox
 kitty
@@ -155,21 +168,6 @@ mpv-mpris
 nautilus
 # nautilus-python: runs the Ryoku stash actions in the file-manager right-click menu
 nautilus-python
-# spotify-launcher: Spotify from the official repo, installed per-user into
-# ~/.local (never root-owned /opt), so the desktop music widget's Spotify Canvas
-# backdrop works out of the box: `ryoku doctor` spicetifies the per-user client
-# with no root chmod. The client itself downloads on first launch.
-spotify-launcher
-# spicetify-cli: the other half of that pair, shipped from [ryoku] (see
-# release/packages/spicetify-cli) rather than the AUR so it is a plain pacman
-# target. It patches the client so the bundled Ryoku Canvas extension
-# (ryoku/apps/spicetify/ryoku-canvas.js) can relay the playing track's Canvas to
-# the music widget. It used to sit in aur.packages, which the ISO does bake, but
-# `ryoku update` is pacman and pacman never touches the AUR: an existing box that
-# missed the one-shot AUR build had no way to get it. Spotify and spicetify are
-# listed together here because neither is useful for this feature without the
-# other. Inert for anyone who does not use Spotify.
-spicetify-cli
 
 # Virtual machines (Ryoku Settings > GPU > Machine): a windowed VM runs in QEMU
 # on the host GPU. edk2-ovmf is the UEFI firmware and virglrenderer the host-GL
@@ -233,6 +231,7 @@ broadcom-bt-firmware
 
 # Shell + CLI
 bash-completion
+blesh
 bat
 btop
 eza
@@ -240,6 +239,10 @@ fastfetch
 fd
 fish
 fzf
+zsh
+zsh-autosuggestions
+zsh-history-substring-search
+zsh-syntax-highlighting
 git
 github-cli
 lazygit
@@ -294,10 +297,6 @@ zbar
 gpu-screen-recorder
 wf-recorder
 
-# Night light (pill Super+U utilities): warm color temperature toggle, driven by
-# ryoku-cmd-nightlight.
-hyprsunset
-
 # Voice dictation (pill Super+`, Voxtype from voxtype-bin): wtype types the
 # transcription into the focused app on Wayland.
 wtype
@@ -317,3 +316,8 @@ ttf-material-symbols-variable
 # kept current by `ryoku update`. Its AUR pkgbase builds with fontforge and could
 # not bake headless in the ISO CI, so it lives here as a reliable repo package.
 otf-space-grotesk
+# ttf-maple-mono-nf: Maple Mono (Nerd Font) monospace face offered for the
+# terminal and code. Ships from [ryoku] (release/packages/ttf-maple-mono-nf) as
+# the upstream prebuilt NF release, so it pacstraps on install and updates with
+# `ryoku update`; same reliable model as otf-space-grotesk.
+ttf-maple-mono-nf

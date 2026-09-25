@@ -40,16 +40,21 @@ Item {
     function cycle(arr, cur) { const i = arr.indexOf(cur); return arr[(i + 1) % arr.length]; }
 
     readonly property string saveGlyph: Capture.save === "clipboard" ? "clipboard" : Capture.save === "file" ? "folder" : "image"
-    readonly property string saveLabel: Capture.save === "clipboard" ? qsTr("Clip")
-        : Capture.save === "file" ? qsTr("Folder") : qsTr("Both")
+    readonly property string saveLabel: Capture.save === "clipboard" ? I18n.tr("Clip")
+        : Capture.save === "file" ? I18n.tr("Folder") : I18n.tr("Both")
 
     function shoot(mode) { root.requestClose(); Capture.shoot(mode); }
-    function record(region) {
+    function record(mode) {
         root.requestClose();
-        if (region)
-            Capture.recordRegion(Recorder.recordArgs());
+        // "screen" records the focused output (no target flag); the other three
+        // raise the shared selection overlay for that family via recordTarget,
+        // which applies the delay after the pick. Screen has nothing to pick, so
+        // it arms the same delay here rather than being the one target that
+        // ignores it.
+        if (mode === "screen")
+            Recorder.startAfter(Recorder.recordArgs(), Capture.delay);
         else
-            Recorder.start(Recorder.recordArgs());
+            Capture.recordTarget(mode, Recorder.recordArgs());
     }
 
     // ── recent captures gallery (roomy tab) ─────────────────────────────────────
@@ -182,14 +187,19 @@ Item {
         property string label: ""
         signal tapped()
         property string tip: ""
+        // A chip near the card's edge pins its bubble inward, or a long tip runs
+        // off the card and clips: the bubble is one line and sized to its text.
+        property string tipAlign: "center"
         implicitHeight: 19 * root.s
         implicitWidth: chipRow.implicitWidth + 12 * root.s
         Rectangle {
             anchors.fill: parent
             radius: 5 * root.s
-            color: chHov.hovered ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.08) : "transparent"
+            color: chTap.pressed ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.16)
+                : (chHov.hovered ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.08) : "transparent")
             border.width: Theme.borderWidth
             border.color: root.line
+            Behavior on color { ColorAnimation { duration: Motion.fast } }
         }
         Row {
             id: chipRow
@@ -213,8 +223,8 @@ Item {
             }
         }
         HoverHandler { id: chHov; cursorShape: Qt.PointingHandCursor }
-        MouseArea { anchors.fill: parent; onClicked: chip.tapped() }
-        Tips.QsTip { text: chip.tip; below: true; hovered: chHov.hovered }
+        MouseArea { id: chTap; anchors.fill: parent; onClicked: chip.tapped() }
+        Tips.QsTip { text: chip.tip; below: true; hovered: chHov.hovered; align: chip.tipAlign }
     }
     // small icon-only toggle with a hover bubble (desktop / mic audio): bone-plate
     // when on, hairline when off.
@@ -230,7 +240,8 @@ Item {
             anchors.fill: parent
             radius: 4 * root.s
             color: itg.on ? Theme.inverseSurface
-                : (igHov.hovered ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.08) : "transparent")
+                : (igTap.pressed ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.16)
+                : (igHov.hovered ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.08) : "transparent"))
             border.width: itg.on ? 0 : Theme.borderWidth
             border.color: root.line
             Behavior on color { ColorAnimation { duration: Motion.fast } }
@@ -244,7 +255,7 @@ Item {
             color: itg.on ? Theme.inverseOnSurface : root.inkDim
         }
         HoverHandler { id: igHov; cursorShape: Qt.PointingHandCursor }
-        MouseArea { anchors.fill: parent; onClicked: itg.toggled() }
+        MouseArea { id: igTap; anchors.fill: parent; onClicked: itg.toggled() }
         Tips.QsTip { text: itg.tip; below: true; hovered: igHov.hovered }
     }
 
@@ -256,16 +267,19 @@ Item {
         property string glyph: ""
         property string label: ""
         property bool accent: false
+        property string tip: ""
         signal tapped()
         width: tile.w
         implicitHeight: (root.roomy ? 50 : 40) * root.s
         Rectangle {
             anchors.fill: parent
             radius: 6 * root.s
-            color: tHov.hovered ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.08) : "transparent"
+            color: tTap.pressed ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.16)
+                : (tHov.hovered ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.08) : "transparent")
             border.width: Theme.borderWidth
             border.color: tHov.hovered ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.28) : root.line
             Behavior on border.color { ColorAnimation { duration: Motion.fast } }
+            Behavior on color { ColorAnimation { duration: Motion.fast } }
         }
         Column {
             anchors.centerIn: parent
@@ -288,7 +302,8 @@ Item {
             }
         }
         HoverHandler { id: tHov; cursorShape: Qt.PointingHandCursor }
-        MouseArea { anchors.fill: parent; onClicked: tile.tapped() }
+        MouseArea { id: tTap; anchors.fill: parent; onClicked: tile.tapped() }
+        Tips.QsTip { text: tile.tip; below: true; hovered: tHov.hovered }
     }
 
     // one-line switch row (beautify, edit-after): glyph + label + LinkToggle; the
@@ -345,7 +360,8 @@ Item {
         width: 24 * root.s
         height: width
         radius: 6 * root.s
-        color: mbHov.hovered ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.10) : "transparent"
+        color: mbTap.pressed ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.16)
+            : (mbHov.hovered ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.10) : "transparent")
         Behavior on color { ColorAnimation { duration: Motion.fast } }
         GlyphIcon {
             anchors.centerIn: parent
@@ -356,7 +372,7 @@ Item {
             color: mb.tint
         }
         HoverHandler { id: mbHov; cursorShape: Qt.PointingHandCursor }
-        TapHandler { onTapped: mb.tapped() }
+        TapHandler { id: mbTap; onTapped: mb.tapped() }
     }
 
     component Rule: Rectangle {
@@ -449,8 +465,8 @@ Item {
             }
         }
         HoverHandler { id: rtHov; cursorShape: Qt.PointingHandCursor }
-        TapHandler { onTapped: if (rt.dir) Spawn.run(["nautilus", rt.dir]) }
-        scale: rtHov.hovered ? 1.03 : 1
+        TapHandler { id: rtTap; onTapped: if (rt.dir) Spawn.run(["nautilus", rt.dir]) }
+        scale: rtTap.pressed ? 1.0 : (rtHov.hovered ? 1.03 : 1)
         Behavior on scale { NumberAnimation { duration: Motion.fast } }
     }
 
@@ -471,7 +487,7 @@ Item {
             Eyebrow {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                text: qsTr("SCREENSHOT")
+                text: I18n.tr("SCREENSHOT")
             }
             Row {
                 anchors.right: parent.right
@@ -481,14 +497,16 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     glyph: root.saveGlyph
                     label: root.saveLabel
-                    tip: Capture.save === "clipboard" ? qsTr("Copy to clipboard only") : Capture.save === "file" ? qsTr("Save to Screenshots folder") : qsTr("Save to Screenshots folder + clipboard")
+                    tip: Capture.save === "clipboard" ? I18n.tr("Clipboard only") : Capture.save === "file" ? I18n.tr("Screenshots folder") : I18n.tr("Folder + clipboard")
+                    tipAlign: "right"
                     onTapped: Capture.save = root.cycle(root.saveSteps, Capture.save)
                 }
                 CycleChip {
                     anchors.verticalCenter: parent.verticalCenter
                     glyph: "watch"
                     label: Capture.delay + "s"
-                    tip: Capture.delay === 0 ? qsTr("No delay before the shot") : qsTr("%1s delay before the shot").arg(Capture.delay)
+                    tip: Capture.delay === 0 ? I18n.tr("No delay before the shot") : I18n.tr("%1s delay before the shot").arg(Capture.delay)
+                    tipAlign: "right"
                     onTapped: Capture.delay = root.cycle(root.delaySteps, Capture.delay)
                 }
             }
@@ -498,17 +516,17 @@ Item {
         Row {
             width: parent.width
             spacing: root.gap
-            ModeTile { w: (root.innerW - root.gap * 3) / 4; glyph: "screens"; label: qsTr("All"); onTapped: root.shoot("all") }
-            ModeTile { w: (root.innerW - root.gap * 3) / 4; glyph: "monitor"; label: qsTr("Screen"); onTapped: root.shoot("monitor") }
-            ModeTile { w: (root.innerW - root.gap * 3) / 4; glyph: "window"; label: qsTr("Window"); onTapped: root.shoot("window") }
-            ModeTile { w: (root.innerW - root.gap * 3) / 4; glyph: "region"; label: qsTr("Region"); onTapped: root.shoot("region") }
+            ModeTile { w: (root.innerW - root.gap * 3) / 4; glyph: "screens"; label: I18n.tr("All"); onTapped: root.shoot("all") }
+            ModeTile { w: (root.innerW - root.gap * 3) / 4; glyph: "monitor"; label: I18n.tr("Screen"); onTapped: root.shoot("monitor") }
+            ModeTile { w: (root.innerW - root.gap * 3) / 4; glyph: "window"; label: I18n.tr("Window"); onTapped: root.shoot("window") }
+            ModeTile { w: (root.innerW - root.gap * 3) / 4; glyph: "region"; label: I18n.tr("Region"); onTapped: root.shoot("region") }
         }
 
         // beautify-after switch.
         InlineToggle {
             width: parent.width
             glyph: "sparkle"
-            label: qsTr("Beautify after")
+            label: I18n.tr("Beautify after")
             on: Capture.beautify
             onToggled: Capture.beautify = !Capture.beautify
         }
@@ -524,7 +542,7 @@ Item {
             Eyebrow {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                text: qsTr("RECORD")
+                text: I18n.tr("RECORD")
             }
             Row {
                 anchors.right: parent.right
@@ -533,40 +551,48 @@ Item {
                 visible: !Recorder.anyActive
                 IconToggle {
                     glyph: "keyboard"
+                    // A bubble is one line sized to its text, so these stay labels:
+                    // a sentence overflows the card and clips at its edge.
                     tip: Keypresses.backendStatus === "error"
                         ? Keypresses.backendError
-                        : qsTr("Show key presses (drag the preview into place)")
+                        : I18n.tr("Show key presses")
                     on: Keypresses.active
                     onToggled: Keypresses.toggle()
                 }
                 IconToggle {
                     glyph: "webcam"
-                    tip: qsTr("Webcam mirror (place it before recording)")
+                    tip: I18n.tr("Webcam mirror")
                     on: Camera.active
                     onToggled: Camera.toggle()
                 }
                 IconToggle {
                     glyph: Recorder.optDesktopAudio ? "speaker" : "speaker-off"
-                    tip: qsTr("Record desktop audio")
+                    tip: I18n.tr("Record desktop audio")
                     on: Recorder.optDesktopAudio
                     onToggled: Recorder.optDesktopAudio = !Recorder.optDesktopAudio
                 }
                 IconToggle {
                     glyph: Recorder.optMic ? "mic" : "mic-off"
-                    tip: qsTr("Record microphone")
+                    tip: I18n.tr("Record microphone")
                     on: Recorder.optMic
                     onToggled: Recorder.optMic = !Recorder.optMic
                 }
             }
         }
 
-        // record starts: Screen / Region (swap for the live indicator when active).
+        // record starts: Screen / Monitor / Window / Region (swap for the live
+        // indicator when active). Screen records the focused output; the other
+        // three raise the shared selection overlay for that family.
         Row {
             width: parent.width
             visible: !Recorder.anyActive
             spacing: root.gap
-            ModeTile { w: (root.innerW - root.gap) / 2; glyph: "monitor"; label: qsTr("Screen"); accent: true; onTapped: root.record(false) }
-            ModeTile { w: (root.innerW - root.gap) / 2; glyph: "region"; label: qsTr("Region"); accent: true; onTapped: root.record(true) }
+            ModeTile { w: (root.innerW - root.gap * 3) / 4; glyph: "monitor"; label: I18n.tr("Screen"); accent: true; onTapped: root.record("screen") }
+            ModeTile { w: (root.innerW - root.gap * 3) / 4; glyph: "screens"; label: I18n.tr("Monitor"); accent: true; onTapped: root.record("monitor") }
+            // The tip is a one-line pill sized to its text, so it has to read as a
+            // label, not a sentence: a longer string overflows the card and clips.
+            ModeTile { w: (root.innerW - root.gap * 3) / 4; glyph: "window"; label: I18n.tr("Window"); accent: true; tip: I18n.tr("Records the area, not the window"); onTapped: root.record("window") }
+            ModeTile { w: (root.innerW - root.gap * 3) / 4; glyph: "region"; label: I18n.tr("Region"); accent: true; onTapped: root.record("region") }
         }
 
         // live indicator: pulsing REC tag, elapsed clock, pause + stop.
@@ -593,7 +619,7 @@ Item {
                 }
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: Recorder.paused ? qsTr("Paused") : qsTr("Recording")
+                    text: Recorder.paused ? I18n.tr("Paused") : I18n.tr("Recording")
                     color: root.ink
                     font.family: Theme.fontPrimary
                     font.pixelSize: 11.5 * root.s
@@ -631,7 +657,7 @@ Item {
         InlineToggle {
             width: parent.width
             glyph: "film"
-            label: qsTr("Edit in Ryomotion")
+            label: I18n.tr("Edit in Ryomotion")
             on: Recorder.editMode
             onToggled: Recorder.editMode = !Recorder.editMode
         }
@@ -639,7 +665,7 @@ Item {
             width: parent.width
             visible: !Recorder.anyActive
             glyph: "discord"
-            label: qsTr("Compact for Discord")
+            label: I18n.tr("Compact for Discord")
             on: Recorder.discordMode
             onToggled: Recorder.discordMode = !Recorder.discordMode
         }
@@ -655,7 +681,7 @@ Item {
             Eyebrow {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                text: qsTr("SCREENSHOTS")
+                text: I18n.tr("SCREENSHOTS")
             }
         }
         Grid {
@@ -685,7 +711,7 @@ Item {
             Eyebrow {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                text: qsTr("RECORDINGS")
+                text: I18n.tr("RECORDINGS")
             }
         }
         Grid {
@@ -713,7 +739,7 @@ Item {
         // hint: the companion beautify/annotate app.
         Text {
             width: parent.width
-            text: qsTr("Super+Shift+S opens Ryoshot to beautify & annotate.")
+            text: I18n.tr("Super+Shift+S opens Ryoshot to beautify & annotate.")
             color: root.inkDim
             font.family: Theme.fontPrimary
             font.pixelSize: (root.roomy ? 10 : 9) * root.s

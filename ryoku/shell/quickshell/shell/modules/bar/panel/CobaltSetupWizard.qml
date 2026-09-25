@@ -3,19 +3,22 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import shell.services
 import "../../../components"
+import Ryoku.Ui.Singletons
 
 // First-run setup for the stash Cobalt engine, as a modal over the Tools panel.
 //
 // The switch used to dead-end on a sentence naming two chores ("start
 // docker.service or add yourself to the docker group") and doing neither. This
-// does them: ryoku-docker starts the service and grants container access, then
-// the cobalt image is pulled and the container started. Each step reports for
-// itself so a failure names the step that failed rather than the whole feature.
+// does the work: ryoku-docker starts the service and reaches docker as root
+// through polkit, then the cobalt image is pulled and the container started.
+// Each step reports for itself so a failure names the step that failed rather
+// than the whole feature.
 //
-// There is no reboot step. The helper escalates through polkit and never reads
-// this session's groups, so the engine works in the session the user is already
-// in; the group is still added, which is why the access step says plain `docker`
-// on the command line arrives at the next login.
+// There is no reboot step and no "add yourself to a group" step: the helper
+// escalates through polkit and does the docker work as root, so the engine
+// works in the session the user is already in and their session is never
+// granted docker access of its own (docker-group membership would be
+// passwordless root for every process they run).
 //
 // All state lives in Stash (setupSteps / setupState / setupStep). This file only
 // renders it, which is what lets the flow be tested without a window.
@@ -69,7 +72,7 @@ Item {
             spacing: 7 * root.s
 
             Text {
-                text: qsTr("Set up the cobalt engine")
+                text: I18n.tr("Set up the cobalt engine")
                 color: Theme.inkOn(Theme.surfaceContainer, Theme.onSurface)
                 font.family: Theme.fontPrimary
                 font.pixelSize: 11 * root.s
@@ -82,11 +85,11 @@ Item {
                 text: {
                     switch (Stash.setupState) {
                     case "done":
-                        return qsTr("Ready. Downloads now run through your local cobalt.");
+                        return I18n.tr("Ready. Downloads now run through your local cobalt.");
                     case "failed":
-                        return qsTr("Setup stopped. Nothing was left running.");
+                        return I18n.tr("Setup stopped. Nothing was left running.");
                     default:
-                        return qsTr("cobalt ships only as a container, so this starts the runtime and pulls the image once. No reboot needed.");
+                        return I18n.tr("cobalt ships only as a container, so this starts the runtime and pulls the image once. No reboot needed.");
                     }
                 }
                 color: Theme.inkOn(Theme.surfaceContainer, Theme.onSurfaceVariant, 3.0)
@@ -151,7 +154,7 @@ Item {
                             Text {
                                 width: parent.width
                                 wrapMode: Text.WordWrap
-                                text: stepRow.label
+                                text: I18n.tr(stepRow.label)
                                 color: stepRow.tone
                                 font.family: Theme.fontPrimary
                                 font.pixelSize: 9 * root.s
@@ -174,21 +177,21 @@ Item {
 
             // Buttons. Retry re-runs the whole flow rather than resuming, which
             // is safe because every step converges: the service is already up,
-            // the group already holds the user, the image is already pulled.
+            // the socket is already bound, the image is already pulled.
             Row {
                 anchors.right: parent.right
                 spacing: 6 * root.s
 
                 WizButton {
                     s: root.s
-                    label: Stash.setupState === "done" ? qsTr("Done") : qsTr("Close")
+                    label: Stash.setupState === "done" ? I18n.tr("Done") : I18n.tr("Close")
                     enabled: !root.busy
                     onTapped: root.closed()
                 }
 
                 WizButton {
                     s: root.s
-                    label: qsTr("Retry")
+                    label: I18n.tr("Retry")
                     accent: true
                     visible: Stash.setupState === "failed"
                     onTapped: Stash.startSetup()
@@ -196,7 +199,7 @@ Item {
 
                 WizButton {
                     s: root.s
-                    label: qsTr("Start setup")
+                    label: I18n.tr("Start setup")
                     accent: true
                     visible: Stash.setupState === "idle"
                     onTapped: Stash.startSetup()
@@ -230,7 +233,7 @@ Item {
             Text {
                 id: btnText
                 anchors.centerIn: parent
-                text: btn.label
+                text: I18n.tr(btn.label)
                 color: btn.accent ? Theme.inkOn(Theme.primary, Theme.onPrimary)
                     : Theme.inkOn(Theme.surfaceContainer, Theme.onSurface)
                 font.family: Theme.fontPrimary

@@ -1,7 +1,8 @@
 _hint() {
   cat <<'EOF'
 ==> Run `ryoku materialize` as your user to lay the Ryoku base configs into
-    ~/.config (login does this automatically; root cannot write a user's home).
+    ~/.config. The next login does this on its own (ryoku-bootstrap.service);
+    running it now means the desktop is complete without a relogin.
 EOF
 }
 
@@ -116,6 +117,45 @@ _ai_usage_timer() {
   mkdir -p /var/lib/ryoku && : >"$marker"
 }
 
+# enable the Bluetooth A2DP-race reset unit once via --global (the unit lives in
+# /usr/lib/systemd/user), so every user picks it up on next login. Marker keeps
+# it one-shot: a user who later disables it stays disabled across upgrades.
+_bt_reset_unit() {
+  [ -e /usr/lib/systemd/user/ryoku-bluetooth-reset.service ] || return 0
+  local marker=/var/lib/ryoku/bt-reset-enabled
+  [ -e "$marker" ] && return 0
+  systemctl --global enable ryoku-bluetooth-reset.service 2>/dev/null || true
+  mkdir -p /var/lib/ryoku && : >"$marker"
+}
+
+# enable the config bootstrap once via --global, so every user picks it up on next
+# login (the units live in /usr/lib/systemd/user). A plain package install lays
+# nothing into ~/.config, and a session with no laid-down config is a bare
+# compositor: no keybinds, no shell autostart, no wallpaper. Marker keeps this
+# one-shot: a user who disables the unit stays disabled across upgrades.
+_bootstrap() {
+  [ -e /usr/lib/systemd/user/ryoku-bootstrap.service ] || return 0
+  local marker=/var/lib/ryoku/bootstrap-enabled
+  [ -e "$marker" ] && return 0
+  systemctl --global enable ryoku-bootstrap.service 2>/dev/null || true
+  mkdir -p /var/lib/ryoku && : >"$marker"
+}
+
+# The kill switch owns its boot dependency: only an explicitly armed switch
+# leaves the units enabled. An unarmed upgrade removes legacy dependencies.
+_network_kill_units() {
+  [ -e /var/lib/ryoku/network-kill-switch.enabled ] && return 0
+  systemctl disable ryoku-network-kill-guard.service \
+    ryoku-network-kill-disconnect.service 2>/dev/null || true
+}
+
+# apply the boot splash + Limine theme when an upgrade ships new art; a no-op in
+# the install chroot, where the installer lays the boot chain.
+_boot_theme() {
+  command -v ryoku-boot-apply >/dev/null 2>&1 || return 0
+  ryoku-boot-apply >/dev/null 2>&1 || true
+}
+
 post_install() {
   _refresh
   _bluetooth
@@ -126,6 +166,9 @@ post_install() {
   _powerprofiles
   _logind_lid
   _ai_usage_timer
+  _bt_reset_unit
+  _bootstrap
+  _boot_theme
   _hint
 }
 
@@ -139,6 +182,9 @@ post_upgrade() {
   _powerprofiles
   _logind_lid
   _ai_usage_timer
+  _bt_reset_unit
+  _boot_theme
+  _network_kill_units
   _hint
 }
 

@@ -4,6 +4,7 @@ import Quickshell.Widgets
 import shell.services
 import "../Singletons"
 import "../../../components"
+import Ryoku.Ui.Singletons
 
 // The 9:16 "canvas" now-playing sheet: a full-bleed backdrop -- the track's
 // Spotify Canvas, a chosen video/gif, or the cover blown up -- with the line
@@ -19,9 +20,12 @@ Item {
     property string videoSource: ""
     property string coverSource: ""
     property bool showLyrics: true
+    // WidgetSlot pins a hex here to paint this face's ink; "" keeps the reference white.
+    property string inkColorA: ""
+    readonly property color ink: tall.inkColorA !== "" ? tall.inkColorA : "white"
 
     readonly property real pad: 16 * tall.s
-    readonly property color dim: Qt.rgba(1, 1, 1, 0.72)
+    readonly property color dim: tall.inkColorA !== "" ? Qt.rgba(Qt.color(tall.inkColorA).r, Qt.color(tall.inkColorA).g, Qt.color(tall.inkColorA).b, 0.72) : Qt.rgba(1, 1, 1, 0.72)
     readonly property var player: Media.player
     readonly property bool seekable: Media.present && !Media.radio
         && tall.player !== null && tall.player.length > 0
@@ -66,7 +70,7 @@ Item {
             anchors.bottom: foot.top
             anchors.bottomMargin: 16 * tall.s
             text: tall.curLine
-            color: "white"
+            color: tall.ink
             wrapMode: Text.WordWrap
             maximumLineCount: 3
             elide: Text.ElideRight
@@ -91,7 +95,7 @@ Item {
             Text {
                 width: parent.width
                 text: Music.title
-                color: "white"
+                color: tall.ink
                 elide: Text.ElideRight
                 font.family: Theme.display
                 font.pixelSize: 19 * tall.s
@@ -123,7 +127,7 @@ Item {
                     frac: tall.length > 0 ? Music.elapsed / tall.length : 0
                     live: Media.playing
                     accent: tall.accent
-                    track: Qt.rgba(1, 1, 1, 0.26)
+                    track: Qt.rgba(tall.ink.r, tall.ink.g, tall.ink.b, 0.26)
                     seekable: tall.player !== null && tall.player.canSeek
                     onSeekRequested: (fraction) => Music.seek(fraction * tall.length)
                 }
@@ -134,7 +138,7 @@ Item {
                     anchors.rightMargin: 12 * tall.s
                     anchors.verticalCenter: parent.verticalCenter
                     visible: !tall.seekable
-                    text: Media.radio ? qsTr("Live") : ""
+                    text: Media.radio ? I18n.tr("Live") : ""
                     color: tall.dim
                     elide: Text.ElideRight
                     font.family: Theme.mono
@@ -148,7 +152,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     s: tall.s
                     accent: tall.accent
-                    ink: "white"
+                    ink: tall.ink
                     inkOnAccent: Theme.surface
                     playing: Media.playing
                     canPrevious: tall.player !== null && tall.player.canGoPrevious

@@ -1,16 +1,31 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// overlayStore sets only allowlisted keys and never clobbers a key outside the
-// allowlist (a shared rice must not overwrite a recipient's personal keys);
-// extractStore is the inverse and leaks nothing outside the allowlist.
-func TestOverlayAndExtractRespectAllowlist(t *testing.T) {
+// writeDesktopStore lays flat hypr sections into the namespaced desktop.json the
+// store now uses, so a test can keep writing the sections it cares about.
+func writeDesktopStore(t *testing.T, flat string) {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(flat), &m); err != nil {
+		t.Fatal(err)
+	}
+	if err := setHyprSections(m); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A snapshot captures shell.json whole and applies it whole: omit drops only
+// the denylisted personal / regional keys (so a new look key travels
+// automatically), and a nil-allowlist overlay sets every captured key while
+// leaving a key the rice never carried untouched.
+func TestShellCaptureOmitsPersonalAndOverlaysWhole(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	p := shellStorePath()
@@ -21,29 +36,33 @@ func TestOverlayAndExtractRespectAllowlist(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := overlayStore(p, map[string]any{"barStyle": "caelestia", "frameBars": map[string]any{"style": "ryoku-frame"}, "weatherLocation": "X"}, riceShellLook); err != nil {
-		t.Fatal(err)
+	// capture: the whole look travels, the personal key is held back.
+	look := omit(readJSONMap(p), riceShellOmit)
+	if look["barStyle"] != "noctalia" || look["fontScale"] == nil {
+		t.Fatalf("omit dropped a look key: %v", look)
 	}
-	got := readJSONMap(p)
-	if got["frameBars"].(map[string]any)["style"] != "ryoku-frame" {
-		t.Fatalf("frameBars = %v, want ryoku-frame", got["frameBars"])
-	}
-	if got["barStyle"] != "noctalia" {
-		t.Fatalf("retired barStyle was applied: %v", got["barStyle"])
-	}
-	if got["weatherLocation"] != "Oslo" {
-		t.Fatalf("non-allowlisted key clobbered: %v", got["weatherLocation"])
+	if _, ok := look["weatherLocation"]; ok {
+		t.Fatal("omit leaked a personal key")
 	}
 
-	ex := extractStore(p, riceShellLook)
-	if _, ok := ex["weatherLocation"]; ok {
-		t.Fatal("extract leaked a non-allowlisted key")
+	// apply onto a recipient: every captured key lands, and a personal key the
+	// rice never carried survives.
+	recipient := filepath.Join(dir, "recipient.json")
+	if err := os.WriteFile(recipient, []byte(`{"barStyle":"caelestia","weatherLocation":"Berlin"}`), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := ex["barStyle"]; ok {
-		t.Fatal("extract leaked the retired barStyle key")
+	if err := overlayStore(recipient, look, nil); err != nil {
+		t.Fatal(err)
 	}
-	if ex["fontScale"] == nil {
-		t.Fatal("extract dropped an allowlisted key")
+	got := readJSONMap(recipient)
+	if got["barStyle"] != "noctalia" {
+		t.Fatalf("overlay did not set barStyle: %v", got["barStyle"])
+	}
+	if got["frameBars"].(map[string]any)["style"] != "slate-frame" {
+		t.Fatalf("overlay did not carry frameBars: %v", got["frameBars"])
+	}
+	if got["weatherLocation"] != "Berlin" {
+		t.Fatalf("overlay clobbered a key the rice never carried: %v", got["weatherLocation"])
 	}
 }
 
@@ -78,9 +97,10 @@ func TestSaveLoadListRice(t *testing.T) {
 	}
 }
 
-// captureRice pulls only look keys into look, routes behavior keys to layers
-// only when opted in, records the cursor by name, and reads the colour mode
-// from the master. personal keys (weatherLocation) never travel.
+// captureRice pulls the whole shell / launcher look (minus the personal /
+// regional denylist), the hypr look sections, and the theme master into look,
+// routes behavior keys to layers only when opted in, and records the cursor by
+// name. personal keys (weatherLocation) never travel; a plain look key does.
 func TestRiceCapture(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -92,7 +112,7 @@ func TestRiceCapture(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write(hyprStorePath(), `{"appearance":{"rounding":10},"cursor":{"theme":"Bibata-Modern-Ice","size":24},"input":{"sensitivity":0.2}}`)
+	writeDesktopStore(t, `{"appearance":{"rounding":10},"cursor":{"theme":"Bibata-Modern-Ice","size":24},"input":{"sensitivity":0.2}}`)
 	write(shellStorePath(), `{"frameBars":{"style":"ryoku-frame"},"weatherLocation":"Oslo","sidebarWidth":360}`)
 	write(launcherStorePath(), `{"heroStrength":0.5,"showWeather":true}`)
 	write(themeStatePath(), `{"followWallpaper":true}`)
@@ -116,8 +136,8 @@ func TestRiceCapture(t *testing.T) {
 	if _, ok := r.Look["shell"]["weatherLocation"]; ok {
 		t.Fatal("personal key weatherLocation captured")
 	}
-	if _, ok := r.Look["shell"]["sidebarWidth"]; ok {
-		t.Fatal("personal key sidebarWidth captured")
+	if _, ok := r.Look["shell"]["sidebarWidth"]; !ok {
+		t.Fatal("a plain look key must travel in the whole-store snapshot")
 	}
 	if r.Assets.Cursor != "Bibata-Modern-Ice" {
 		t.Fatalf("cursor = %q", r.Assets.Cursor)
@@ -138,10 +158,10 @@ func TestRiceCapture(t *testing.T) {
 	}
 }
 
-// applyRice merges only allowlisted look keys onto the live stores (a personal
-// key survives), flips the colour master for a fixed rice and writes its
-// palette, and reloads. restoreRice(".baseline") then reverts every store to
-// the pristine pre-apply snapshot.
+// applyRice overlays the captured look keys onto the live stores (a key the
+// rice never carried survives), flips the colour master for a fixed rice and
+// writes its palette, and reloads. restoreRice(".baseline") then reverts every
+// store to the pristine pre-apply snapshot.
 func TestRiceApplyMergesAndRestoreReverts(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -162,7 +182,7 @@ func TestRiceApplyMergesAndRestoreReverts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	w(hyprStorePath(), `{"appearance":{"rounding":2},"cursor":{"theme":"Bibata-Modern-Ice","size":24}}`)
+	writeDesktopStore(t, `{"appearance":{"rounding":2},"cursor":{"theme":"Bibata-Modern-Ice","size":24}}`)
 	w(shellStorePath(), `{"frameBars":{"style":"slate-frame","rails":{"top":{"size":44}}},"weatherLocation":"Oslo","sidebarWidth":360}`)
 	w(launcherStorePath(), `{"heroStrength":0.6}`)
 	w(themeStatePath(), `{"followWallpaper":true}`)
@@ -183,7 +203,7 @@ func TestRiceApplyMergesAndRestoreReverts(t *testing.T) {
 	if shell["sidebarWidth"] != float64(360) {
 		t.Fatal("apply clobbered a personal sidebar value")
 	}
-	ap := readJSONMap(hyprStorePath())["appearance"].(map[string]any)
+	ap := readHyprSections()["appearance"].(map[string]any)
 	if ap["rounding"].(float64) != 18 {
 		t.Fatalf("apply rounding = %v, want 18", ap["rounding"])
 	}
@@ -243,7 +263,7 @@ func TestThemeAppsRoundTrip(t *testing.T) {
 	}
 
 	// capture with the toggle off records the choice on the rice.
-	w(hyprStorePath(), `{"appearance":{"rounding":2}}`)
+	writeDesktopStore(t, `{"appearance":{"rounding":2}}`)
 	w(shellStorePath(), `{"frameBars":{"style":"slate-frame"}}`)
 	w(launcherStorePath(), `{}`)
 	w(themeStatePath(), `{"followWallpaper":true,"themeApps":false}`)
@@ -349,9 +369,7 @@ func TestCaptureAllLayersAndTouches(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "ryoku"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(hyprStorePath(), []byte(`{"appearance":{"rounding":0},"keybinds":[{"keys":"SUPER + T","action":"exec","value":"kitty"}],"windowRules":[{"class":"Spotify","action":"float"}],"input":[]}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeDesktopStore(t, `{"appearance":{"rounding":0},"keybinds":[{"keys":"SUPER + T","action":"exec","value":"kitty"}],"windowRules":[{"class":"Spotify","action":"float"}],"input":[]}`)
 	if err := os.WriteFile(themeStatePath(), []byte(`{"followWallpaper":true}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +421,7 @@ func TestSquareShellAndKeybindRoundTrip(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	w(hyprStorePath(), `{"appearance":{"rounding":12},"keybinds":[]}`)
+	writeDesktopStore(t, `{"appearance":{"rounding":12},"keybinds":[]}`)
 	w(shellStorePath(), `{"frameBars":{"style":"slate-frame"},"frameRadius":9,"roundness":10,"osdRadius":12}`)
 	w(launcherStorePath(), `{}`)
 	w(themeStatePath(), `{"followWallpaper":true}`)
@@ -422,12 +440,12 @@ func TestSquareShellAndKeybindRoundTrip(t *testing.T) {
 			t.Fatalf("square rice did not set shell %s to 0: %v", k, shell[k])
 		}
 	}
-	ap := readJSONMap(hyprStorePath())["appearance"].(map[string]any)
+	ap := readHyprSections()["appearance"].(map[string]any)
 	if ap["rounding"].(float64) != 0 {
 		t.Fatalf("square rice did not set window rounding to 0: %v", ap["rounding"])
 	}
-	if kb, _ := readJSONMap(hyprStorePath())["keybinds"].([]any); len(kb) != 1 {
-		t.Fatalf("keybinds layer not installed: %v", readJSONMap(hyprStorePath())["keybinds"])
+	if kb, _ := readHyprSections()["keybinds"].([]any); len(kb) != 1 {
+		t.Fatalf("keybinds layer not installed: %v", readHyprSections()["keybinds"])
 	}
 
 	if err := restoreRice(".baseline"); err != nil {
@@ -437,8 +455,8 @@ func TestSquareShellAndKeybindRoundTrip(t *testing.T) {
 	if shell2["frameRadius"].(float64) != 9 {
 		t.Fatalf("restore did not revert the frame shape: %v", shell2)
 	}
-	if kb2, _ := readJSONMap(hyprStorePath())["keybinds"].([]any); len(kb2) != 0 {
-		t.Fatalf("restore did not remove the installed keybind: %v", readJSONMap(hyprStorePath())["keybinds"])
+	if kb2, _ := readHyprSections()["keybinds"].([]any); len(kb2) != 0 {
+		t.Fatalf("restore did not remove the installed keybind: %v", readHyprSections()["keybinds"])
 	}
 }
 
@@ -467,7 +485,7 @@ func TestCaptureNewStoresDecorsAndLiveWall(t *testing.T) {
 	w(decorPic, "PNG")
 	w(mark, "PNG")
 	w(clip, "MP4")
-	w(hyprStorePath(), `{"appearance":{"rounding":8}}`)
+	writeDesktopStore(t, `{"appearance":{"rounding":8}}`)
 	w(shellStorePath(), `{"frameBars":{"style":"ryoku-frame"}}`)
 	w(launcherStorePath(), `{"bgBlur":0.4,"radius":22}`)
 	w(themeStatePath(), `{"followWallpaper":true}`)
@@ -553,7 +571,7 @@ func TestApplyNewStoresBrandAndVideoWall(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	w(hyprStorePath(), `{"appearance":{"rounding":2}}`)
+	writeDesktopStore(t, `{"appearance":{"rounding":2}}`)
 	w(shellStorePath(), `{"frameBars":{"style":"slate-frame"}}`)
 	w(launcherStorePath(), `{}`)
 	w(themeStatePath(), `{"followWallpaper":true}`)
@@ -605,7 +623,7 @@ func TestApplyNewStoresBrandAndVideoWall(t *testing.T) {
 	wantWall := filepath.Join(dir, "Pictures", "livewalls", "wave.mp4")
 	found := false
 	for _, c := range calls {
-		if c == "ryoku-shell wallpaper set "+wantWall {
+		if c == "ryogami wallpaper set "+wantWall {
 			found = true
 		}
 	}
@@ -700,5 +718,203 @@ func TestRunRiceRejectsStoreCommands(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "unknown rice subcommand") {
 			t.Fatalf("runRice(%q) = %v, want unknown rice subcommand", command, err)
 		}
+	}
+}
+
+// The widened snapshot carries the whole desktop identity: the theme master
+// (named scheme, GTK choice), the wallpaper daemon's matugen scheme, the
+// fastfetch readout with its emblem, and the lock skin. capture bundles each and
+// apply lands them all on a recipient whose own machine tuning is left alone.
+func TestCaptureAppliesThemeFastfetchAndLock(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(dir, "cache"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "data"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state"))
+	t.Setenv("HOME", dir)
+	origRun, origReload := riceRun, riceReload
+	riceRun = func(name string, args ...string) error { return nil }
+	riceReload = func() {}
+	t.Cleanup(func() { riceRun, riceReload = origRun, origReload })
+
+	w := func(p, body string) {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// a lock skin the author has installed (a folder with Main.qml); the rice
+	// travels its slug, not the files.
+	slug := "clockwork/orbital"
+	w(filepath.Join(qylockThemesDir(), slug, "Main.qml"), "import QtQuick")
+	w(qylockThemePref(), slug+"\n")
+
+	writeDesktopStore(t, `{"appearance":{"rounding":6},"dwindle":{"mfact":0.6}}`)
+	w(shellStorePath(), `{"barStyle":"qsbar"}`)
+	w(launcherStorePath(), `{}`)
+	w(themeStatePath(), `{"followWallpaper":false,"scheme":"mono","gtkTheme":"adwaita","themeApps":true}`)
+	w(ryogamiStorePath(), `{"matugen":{"mode":"dark","schemeType":"scheme-fidelity"},"resource_tier":"high"}`)
+	emblem := filepath.Join(dir, "logo.png")
+	w(emblem, "PNG")
+	w(fastfetchConfigPath(), `{"logo":{"type":"kitty-direct","source":"`+emblem+`"},"display":{"key":{"width":9}}}`)
+	w(filepath.Join(dir, "cache", "ryoku", "colors.json"), `{"background":"#101010"}`)
+
+	r, err := captureRice("Identity", []string{"all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Look["theme"]["scheme"] != "mono" || r.Look["theme"]["gtkTheme"] != "adwaita" {
+		t.Fatalf("theme master not captured: %v", r.Look["theme"])
+	}
+	if mat, ok := r.Look["ryogami"]["matugen"].(map[string]any); !ok || mat["schemeType"] != "scheme-fidelity" {
+		t.Fatalf("ryogami matugen scheme not captured: %v", r.Look["ryogami"])
+	}
+	if _, ok := r.Look["ryogami"]["resource_tier"]; ok {
+		t.Fatal("machine tuning (resource_tier) must not travel")
+	}
+	rdir := filepath.Join(ricesDir(), r.Slug)
+	if r.Assets.FastfetchStyle != "fastfetch.jsonc" || !isFile(filepath.Join(rdir, "fastfetch.jsonc")) {
+		t.Fatalf("fastfetch style not bundled: %q", r.Assets.FastfetchStyle)
+	}
+	if r.Assets.Fastfetch == "" || !isFile(filepath.Join(rdir, r.Assets.Fastfetch)) {
+		t.Fatalf("fastfetch emblem not bundled: %q", r.Assets.Fastfetch)
+	}
+	if r.Assets.Lock != slug {
+		t.Fatalf("lock slug = %q, want %q", r.Assets.Lock, slug)
+	}
+
+	// a recipient with different everything adopts the rice's identity.
+	w(themeStatePath(), `{"followWallpaper":true,"scheme":"light","gtkTheme":"adw"}`)
+	w(ryogamiStorePath(), `{"matugen":{"mode":"light","schemeType":"scheme-tonal-spot"},"resource_tier":"low"}`)
+	w(fastfetchConfigPath(), `{"logo":{"type":"builtin"}}`)
+	w(qylockThemePref(), "other/skin\n")
+
+	if err := applyRice(r.Slug, nil); err != nil {
+		t.Fatal(err)
+	}
+	st := loadThemeState()
+	if st.Scheme != "mono" || gtkThemeChoice(st) != "adwaita" {
+		t.Fatalf("apply did not carry the theme master: %+v", st)
+	}
+	if readJSONMap(ryogamiStorePath())["matugen"].(map[string]any)["schemeType"] != "scheme-fidelity" {
+		t.Fatal("apply did not carry the matugen scheme")
+	}
+	if readJSONMap(ryogamiStorePath())["resource_tier"] != "low" {
+		t.Fatal("apply must not overwrite machine tuning")
+	}
+	if ff, _ := loadFastfetch(); ff.Logo.Kind != "image" {
+		t.Fatalf("apply did not restore the fastfetch emblem: %+v", ff.Logo)
+	}
+	if readLockPref(qylockThemePref()) != slug {
+		t.Fatalf("apply did not set the lock skin: %q", readLockPref(qylockThemePref()))
+	}
+}
+
+// A rice with the brand layer bundles the custom reload-cover asset the same
+// way it bundles the mark: the file is copied into the rice folder and the
+// path rewritten to rice://, so the cover travels instead of pointing at a
+// file that exists only on the author's disk.
+func TestCaptureBundlesReloadCover(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state"))
+	t.Setenv("HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "ryoku"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cover := filepath.Join(dir, "cover.gif")
+	if err := os.WriteFile(cover, []byte("GIF89a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(brandStorePath(), []byte(`{"name":"Berserk","reloadCover":{"path":"`+cover+`","name":"cover.gif","kind":"animated","bytes":6,"enabled":true}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := captureRice("Cov", []string{"brand"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, ok := r.Layers["brand"]
+	if !ok {
+		t.Fatalf("brand layer not captured: %v", r.Layers)
+	}
+	var bm map[string]any
+	if err := json.Unmarshal(raw, &bm); err != nil {
+		t.Fatal(err)
+	}
+	rc, _ := bm["reloadCover"].(map[string]any)
+	if rc == nil {
+		t.Fatalf("reloadCover not in captured brand layer: %s", raw)
+	}
+	if rc["path"] != "rice://reloadcover.gif" {
+		t.Fatalf("reloadCover path not bundled to rice://: %v", rc["path"])
+	}
+	if rc["kind"] != "animated" || rc["enabled"] != true {
+		t.Fatalf("reloadCover metadata not preserved: %v", rc)
+	}
+	if !isFile(filepath.Join(ricesDir(), "cov", "reloadcover.gif")) {
+		t.Fatal("bundled reload cover missing from the rice folder")
+	}
+}
+
+// Applying a rice lands the bundled reload cover under rice-assets and rewrites
+// the path to that absolute location (so the renderer's "file://"+path resolves
+// on this box); a rice:// asset that is missing, or a foreign absolute path
+// that does not resolve here, drops the block so the reload falls back to the
+// default cover cleanly instead of a broken one.
+func TestRehydrateReloadCoverAsset(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "ryoku"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	riceDir := filepath.Join(dir, "rice")
+	if err := os.MkdirAll(riceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(riceDir, "reloadcover.gif"), []byte("GIF89a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	present := filepath.Join(dir, "present.gif")
+	if err := os.WriteFile(present, []byte("GIF89a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// rice:// reference: copied under rice-assets, path rewritten to it.
+	bm := map[string]any{"reloadCover": map[string]any{"path": "rice://reloadcover.gif", "kind": "animated"}}
+	rehydrateBrandAssets(riceDir, "cov", bm)
+	rc, _ := bm["reloadCover"].(map[string]any)
+	if rc == nil {
+		t.Fatalf("reloadCover dropped for a valid rice:// asset: %v", bm)
+	}
+	got, _ := rc["path"].(string)
+	wantPrefix := filepath.Join(dir, "ryoku", "rice-assets", "cov")
+	if !strings.HasPrefix(got, wantPrefix) || !isFile(got) {
+		t.Fatalf("reloadCover not rehydrated under rice-assets: %q", got)
+	}
+
+	// rice:// reference whose file is not in the rice folder: dropped.
+	bm = map[string]any{"reloadCover": map[string]any{"path": "rice://missing.gif", "kind": "animated"}}
+	rehydrateBrandAssets(riceDir, "cov", bm)
+	if _, ok := bm["reloadCover"]; ok {
+		t.Fatalf("missing rice:// cover not dropped: %v", bm)
+	}
+
+	// foreign absolute path that does not resolve on this box: dropped.
+	bm = map[string]any{"reloadCover": map[string]any{"path": "/home/someone-else/.local/share/ryoku/reload-cover/x.gif", "kind": "animated"}}
+	rehydrateBrandAssets(riceDir, "cov", bm)
+	if _, ok := bm["reloadCover"]; ok {
+		t.Fatalf("dangling absolute cover not dropped: %v", bm)
+	}
+
+	// an absolute path that does resolve here (e.g. a same-box re-apply) is kept.
+	bm = map[string]any{"reloadCover": map[string]any{"path": present, "kind": "animated"}}
+	rehydrateBrandAssets(riceDir, "cov", bm)
+	rc, _ = bm["reloadCover"].(map[string]any)
+	if rc == nil || rc["path"] != present {
+		t.Fatalf("resolvable absolute cover not kept: %v", bm)
 	}
 }

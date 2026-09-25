@@ -1,5 +1,9 @@
 function statusLabels(item) {
     var labels = [];
+    if (isUnavailable(item))
+        labels.push(unavailableLabel(item));
+    if (isDownloadPaused(item))
+        labels.push("UNDER CONSTRUCTION");
     if (item && item.updateAvailable)
         labels.push("UPDATE");
     if (item && item.active)
@@ -10,13 +14,53 @@ function statusLabels(item) {
         labels.push(String(item.installedCount) + " / " + String(item.totalCount) + " INSTALLED");
     else if (item && item.installed)
         labels.push("INSTALLED");
-    else
+    else if (!isDownloadPaused(item) && !isUnavailable(item))
         labels.push("AVAILABLE");
     return labels;
 }
 
 function isInstalled(item) {
     return Boolean(item && (item.installed || item.active || item.enabled || Number(item.installedCount || 0) > 0));
+}
+
+// downloadPaused: an item the catalogue has frozen. It stays listed and an
+// installed copy can still be removed, but every install/update surface must
+// treat it as unavailable and surface the reason instead of a download.
+function isDownloadPaused(item) {
+    return Boolean(item && item.downloadPaused);
+}
+
+function downloadPauseReason(item) {
+    return isDownloadPaused(item) ? String((item && item.downloadPauseReason) || "") : "";
+}
+
+// unavailable: a product the catalogue wrote for another window manager. It is
+// refused for install and update by the backend (a client cannot bypass that),
+// stays listed, and keeps any installed copy removable; every surface here must
+// show it greyed with the reason instead of an action that cannot work.
+function isUnavailable(item) {
+    return Boolean(item && item.unavailable);
+}
+
+// The chip and the disabled action both name the window manager the product
+// wants, taken from the product itself rather than from a list of names here.
+function unavailableLabel(item) {
+    if (!isUnavailable(item))
+        return "";
+    var want = String((item && item.requiredWindowManager) || "").toUpperCase();
+    return want.length > 0 ? want + " ONLY" : "UNAVAILABLE";
+}
+
+function unavailableReason(item) {
+    return isUnavailable(item) ? String((item && item.unavailableReason) || "") : "";
+}
+
+// pluginKind classifies a plugin by its host surface: a plugin is a BAR plugin
+// when its manifest hosts include topbarGlyph, otherwise it is a DESKTOP plugin
+// (desktopWidget / framePopout). Pure over item.metadata.hosts.
+function pluginKind(item) {
+    var hosts = (item && item.metadata && Array.isArray(item.metadata.hosts)) ? item.metadata.hosts : [];
+    return hosts.indexOf("topbarGlyph") !== -1 ? "bar" : "desktop";
 }
 
 function searchText(item) {
@@ -57,6 +101,8 @@ function filter(items, options) {
         if (opts.provider && (item.metadata && item.metadata.provider ? item.metadata.provider : "Community") !== opts.provider)
             return false;
         if (opts.tag && (item.tags || []).indexOf(opts.tag) === -1)
+            return false;
+        if (opts.pluginKind && pluginKind(item) !== opts.pluginKind)
             return false;
         return matchesQuery(item, opts.query);
     });
@@ -124,6 +170,7 @@ function collection(items, options) {
         category: opts.categoryID || "",
         installedOnly: opts.view === "library" || opts.installedOnly === true,
         provider: opts.provider || "",
+        pluginKind: opts.pluginKind || "",
         query: opts.query || ""
     });
     if (opts.view !== "library" && !opts.categoryID && !opts.query) {
@@ -157,6 +204,10 @@ function categoryPlates(categories) {
 }
 
 function primaryAction(item) {
+    if (isUnavailable(item))
+        return unavailableLabel(item);
+    if (isDownloadPaused(item))
+        return "UNDER CONSTRUCTION";
     if (item && item.busy)
         return "INSTALLING";
     if (item && Number(item.installedCount || 0) > 0 && Number(item.totalCount || 0) > Number(item.installedCount || 0))
@@ -180,4 +231,4 @@ function sortCategories(categories) {
 }
 
 if (typeof module !== "undefined" && module.exports)
-    module.exports = { statusLabels, isInstalled, searchText, matchesQuery, filter, groupSearch, featured, installed, itemKey, collection, selectionKey, categoryPlates, primaryAction, secondaryAction, sortCategories, shuffleSeeded };
+    module.exports = { statusLabels, isInstalled, isDownloadPaused, downloadPauseReason, isUnavailable, unavailableLabel, unavailableReason, pluginKind, searchText, matchesQuery, filter, groupSearch, featured, installed, itemKey, collection, selectionKey, categoryPlates, primaryAction, secondaryAction, sortCategories, shuffleSeeded };

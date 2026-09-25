@@ -21,6 +21,12 @@ Rectangle {
     id: card
 
     required property var notif
+    // The delegate outlives its model entry: a dismissed toast animates out while
+    // the service has already dropped it, so every read goes through this instead
+    // of dereferencing a null. It is a function, not a property: a property binds
+    // once, and the object dying emits no change, so the cached reference stayed
+    // dead and every read off it threw.
+    function n() { return card.notif || ({}) }
     // Fired after an action runs; the panel closes the menu on it, the popup
     // ignores it (contract 07 sec 4.3).
     signal actionInvoked()
@@ -45,7 +51,7 @@ Rectangle {
     // as the open button, not a row button) and any action with no label are
     // dropped, so a bare default no longer draws an empty pill.
     readonly property var visibleActions: {
-        const all = card.notif.actions || [];
+        const all = card.n().actions || [];
         const out = [];
         for (let i = 0; i < all.length; i++)
             if (all[i] && all[i].identifier !== "default" && (all[i].text || "").length > 0)
@@ -56,7 +62,7 @@ Rectangle {
     // The freedesktop default action ("click the notification to open"): surfaced
     // as the open button instead of a click target. null when the app sent none.
     readonly property var defaultAction: {
-        const all = card.notif.actions || [];
+        const all = card.n().actions || [];
         for (let i = 0; i < all.length; i++)
             if (all[i] && all[i].identifier === "default")
                 return all[i];
@@ -102,7 +108,7 @@ Rectangle {
         id: bodyMeasure
         visible: false
         width: card.width - Theme.paddingMd * 2 * card.us
-        text: card.notif.body || ""
+        text: card.n().body || ""
         font.family: Theme.fontPrimary
         font.pixelSize: Theme.fontSm * card.us
         wrapMode: Text.WrapAtWordBoundaryOrAnywhere
@@ -161,7 +167,7 @@ Rectangle {
                 anchors.right: timeLabel.left
                 anchors.rightMargin: Theme.paddingSm * card.us
                 anchors.verticalCenter: parent.verticalCenter
-                text: card.notif.appName || ""
+                text: card.n().appName || ""
                 color: Theme.onSurfaceVariant
                 font.family: Theme.fontPrimary
                 font.pixelSize: Theme.fontSm * card.us
@@ -217,7 +223,7 @@ Rectangle {
         // Summary: bold, wraps.
         Text {
             width: parent.width
-            text: card.notif.summary || ""
+            text: card.n().summary || ""
             color: Theme.onSurface
             font.family: Theme.fontPrimary
             font.pixelSize: Theme.fontMd * card.us
@@ -229,8 +235,8 @@ Rectangle {
         // compact and collapsed, full once expanded (or in the history panel).
         Text {
             width: parent.width
-            visible: (card.notif.body || "").length > 0
-            text: card.notif.body || ""
+            visible: (card.n().body || "").length > 0
+            text: card.n().body || ""
             color: Theme.onSurfaceVariant
             font.family: Theme.fontPrimary
             font.pixelSize: Theme.fontSm * card.us
@@ -243,6 +249,7 @@ Rectangle {
         // 2.3). Hidden while a popup is compact and collapsed; the expand chevron
         // brings them in, fading up as the card grows.
         Column {
+            id: actionCol
             width: parent.width
             spacing: Theme.paddingSm * card.us
             visible: card.visibleActions.length > 0 && card.showFull
@@ -256,7 +263,10 @@ Rectangle {
                     id: actionBtn
                     required property var modelData
 
-                    width: parent.width
+                    // the column by id, not `parent`: a Repeater delegate has no
+                    // parent while it is being created, so a notification that
+                    // carries actions logged a TypeError for every button.
+                    width: actionCol.width
                     height: actionLabel.implicitHeight + Theme.paddingSm * 2 * card.us
                     radius: Theme.radiusWidget * card.us
                     color: actionHov.hovered ? Theme.vermLit : Theme.primary

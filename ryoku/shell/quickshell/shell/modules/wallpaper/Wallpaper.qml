@@ -3,52 +3,60 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import Quickshell
 import Quickshell.Io
-import Quickshell.Wayland
-import "Singletons"
 
 /**
- * Ryoku desktop backdrop: the in-shell wallpaper surface, one instance per
- * monitor (the shell root's per-screen scope constructs it with `screen`).
+ * Ryoku wallpaper topic bridge, one instance per monitor (the shell root's
+ * per-screen scope constructs it with `screen`).
  *
- * A Background layer window (namespace ryoku-wallpaper, exclusive zone -1, all
- * four edges anchored, no input) draws the single global wallpaper on this
- * output. The ryoku-shell daemon copies the chosen image into a cache file,
- * bumps a revision, and streams {path, revision, fit} on the `wallpaper` topic;
- * the window crossfades (200 ms) to every new revision. This replaces the
- * external wallpaper daemon so wallpaper state, the colour scheme, and the
- * shell all live in one place. Contract 08 sec 1, 2.6, 3.1, 5, 7.
+ * Ryogami (the Go wallpaper daemon) publishes one coalesced full-state frame
+ * {default: ENTRY, outputs: {connector: ENTRY}} per revision on the `wallpaper`
+ * topic of $XDG_RUNTIME_DIR/ryogami.sock. This bridge subscribes and re-exposes
+ * this output's entry (outputs[screen.name] or, absent an override, default)
+ * as the wallpaper/video urls and fit that the desktop's backdrop
+ * (modules/desktop -> WallpaperMod.Backdrop) paints: stills with the reveal
+ * transition and live clips through the in-shell QtMultimedia player. Stage
+ * cuts and renders its own subject from the daemon `stage` topic; the frame's
+ * `depth` fold stays ryogami's pixel-lock subject, unchanged on the wire
+ * (docs/stage.md). Contract 08 sec 1, 2.6, 5, 7.
  *
- * The wallpaper switcher (modules/wallpaper/switcher) still sets wallpapers
- * through `ryoku-shell wallpaper set`, which feeds this same topic.
+ * The ryogami wallpaper picker (Super+W) sets wallpapers through ryogami,
+ * which feeds this same topic.
  */
 Item {
     id: root
 
-    // The monitor this backdrop paints, supplied by the shell root's per-screen
+    // The monitor this bridge tracks, supplied by the shell root's per-screen
     // scope (contract 08 sec 7: hotplug adds a monitor -> a new instance here).
     required property var screen
 
-    // The full file url the surface paints, folded from the topic's path +
-    // revision so the query busts Qt's pixmap cache on every change (contract 08
-    // sec 3.1). "" until the first frame; the window's paper colour shows.
-    property string wallpaperUrl: ""
-    // content_fit -> Image.fillMode (contract 08 sec 3.3); Cover is the default.
-    property string fit: "Cover"
-    // The reveal preset for the current revision (null = plain crossfade), streamed
-    // on the same wallpaper topic frame and handed to the backdrop's reveal shader.
-    property var transition: null
+    WallpaperFrame {
+        id: frame
+        screenName: root.screen ? root.screen.name : ""
+    }
+    readonly property string wallpaperUrl: frame.path.length > 0
+        ? "file://" + frame.path + "?v=" + frame.revision : ""
+    readonly property string wallpaperPath: frame.path
+    readonly property string fit: frame.fit
+    // The reveal preset for the current revision (null = plain crossfade).
+    readonly property var transition: frame.transition
+    // The video clip for a live wallpaper ("" for a still).
+    readonly property string videoUrl: frame.videoPath.length > 0
+        ? "file://" + frame.videoPath : ""
+    // The in-shell clip's audio, threaded to the backdrop's player: muted by
+    // default, volume 0-100 (Backdrop scales it to 0..1).
+    readonly property bool videoMuted: frame.mute
+    readonly property int videoVolume: frame.volume
+    // The ryogami-live yield flag: hide the in-shell painter while the C
+    // player owns the background layer; false for the in-shell engine.
+    readonly property bool live: frame.live
+    // The first topic frame gates readiness, not the in-shell decode: the
+    // backdrop itself waits on the Image decode before revealing.
+    readonly property bool reloadReady: frame.ready
 
-    readonly property string sockPath: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/ryoku-shell.sock"
+    readonly property string sockPath: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/ryogami.sock"
 
-    function apply(line) {
-        try {
-            const f = JSON.parse(line);
-            root.fit = f.fit || "Cover";
-            root.transition = f.transition || null; // set before url so onUrlChanged sees the matching preset
-            root.wallpaperUrl = (f.path && f.path.length > 0) ? "file://" + f.path + "?v=" + (f.revision || 0) : "";
-        } catch (e) {
-            // A malformed frame must never blank the desktop; keep the last image.
-        }
+    function apply(line: string): void {
+        frame.apply(line);
     }
 
     // Subscribe once, then stream, mirroring the Tray/Clipboard singletons. A
@@ -69,41 +77,23 @@ Item {
                 retry.restart();
             }
         }
+        // A peer close (the daemon restarting under us, which is what login does
+        // with the session daemons) arrives as a socket error and leaves
+        // `connected` true, so the branch above never ran: the desktop kept a
+        // grey wallpaper until something re-applied by hand. Drop the link on the
+        // error so the reconnect path takes over and re-requests the frame.
+        onError: {
+            connected = false;
+            retry.restart();
+        }
     }
 
-    // The daemon may be down when the surface loads (or restart under it); retry
-    // quietly so the desktop repaints once it returns.
+    // Ryogami may be down when the shell loads (or restart under it); retry
+    // quietly so the desktop rebinds once it returns.
     Timer {
         id: retry
         interval: 2000
         onTriggered: if (!sub.connected)
             sub.connected = true
-    }
-
-    PanelWindow {
-        id: win
-
-        screen: root.screen
-        color: Theme.paper
-        exclusiveZone: -1
-        WlrLayershell.namespace: "ryoku-wallpaper"
-        WlrLayershell.layer: WlrLayer.Background
-        WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
-        anchors {
-            top: true
-            bottom: true
-            left: true
-            right: true
-        }
-        // A wallpaper takes no input: clicks pass through to the desktop and
-        // the widgets that ride this layer (same as the frame edge surfaces).
-        mask: Region {}
-
-        Backdrop {
-            anchors.fill: parent
-            url: root.wallpaperUrl
-            fit: root.fit
-            transition: root.transition
-        }
     }
 }

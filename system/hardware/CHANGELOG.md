@@ -2,7 +2,73 @@
 
 ## Unreleased
 
+### Added
+- `display/ryoku-monitor`: **a hand-entered resolution is forced, not ignored.**
+  When a layout carries a `WxH@rate` mode the panel does not advertise (the Hub's
+  new Displays "Custom…" entry), `apply`/`save` generate a CVT reduced-blanking
+  modeline (`cvt`, from the already-present libxcvt) and use that, which Hyprland
+  accepts as a forced timing; advertised modes pass through unchanged. Covered by
+  `tests/monitor-custom-mode.sh`.
+
 ### Fixed
+- `display/ryoku-monitor`: **an active monitor is no longer treated as disabled
+  on Hyprland builds that mislabel it.** hyprland-git reports `"disabled": true`
+  for a plainly active output (focused, DPMS on, a real mode, an active
+  workspace); Ryoku trusted the flag, so every `select(.disabled | not)` dropped
+  the live panel -- no scale, wrong `GDK_SCALE` -- and `write_monitors_conf`
+  persisted `disabled = true` into `monitors.lua`, disabling it for real on the
+  next login (the Hub also showed it disabled, and workspaces on it broke).
+  `monitors_json` now derives disabled from the mode (a genuinely off output has
+  no resolution, `0x0`), which is stable across Hyprland versions and keeps a
+  DPMS-asleep panel enabled.
+- `display/ryoku-monitor`: **display settings survive a reboot and a power-cycled
+  TV; an HDMI output no longer reverts as if freshly connected.** A saved layout
+  was recalled only when the connected identity set matched the saved one
+  exactly, so an LG TV that reports a different (or empty) serial between boots,
+  or is still asleep when `autoscale` runs at login, invalidated the whole layout
+  and dropped it to DPI scaling; `monitors.lua` was then regenerated from the
+  live outputs alone, dropping the missing display's stanza entirely. Matching is
+  now per-display and identity-first: make/model/serial, then make/model when a
+  serial drifts, with an EDID-less display keyed on its connector. A saved
+  display absent at that instant keeps its stanza, and a connector rename remaps
+  it; booting the same disk on another machine still falls back to DPI rather
+  than draping one panel's settings over a different panel on the same port. The
+  generated `monitors.lua` header now points hand edits at
+  `~/.config/hypr/monitors_user.lua`, which is loaded after it and never
+  rewritten. Covered by `tests/monitor-persist.sh` (#152).
+- `bluetooth/ryoku-bluetooth-reset.service`: **a Bluetooth audio device that
+  connected then dropped a second later now stays connected.** BlueZ 5.83+
+  actively disconnects a device whose authentication is retried mid-stream (an
+  upstream regression, bluez#1545); the reliable remedy is restarting the
+  bluetooth service once the session audio stack (WirePlumber, which owns BlueZ's
+  A2DP endpoints) is up. A new user-session unit does exactly that, gated on a
+  Bluetooth radio being present and ordered after WirePlumber, with a scoped
+  polkit rule (`54-ryoku-bluetooth-a2dp.rules`) so it needs no password.
+  Restarting before anything is connected clears the race with no audible drop;
+  if polkit ever denies it the fix simply no-ops, never a regression (#63).
+- `display/ryoku-hw-backlight`: **brightness keys work on multi-backlight
+  laptops instead of driving a dead device.** A laptop can register several
+  `/sys/class/backlight` devices -- one per backlight-capable DRM connector, plus
+  a phantom for the discrete GPU (e.g. `amdgpu_bl0` for a disconnected connector
+  beside `amdgpu_bl2` for the real panel, or `nvidia_0` next to `amdgpu_bl*`). The
+  old fixed name-priority list (which omarchy and end-4/brightnessctl also use)
+  grabbed the first `amdgpu_bl*` or a device that controls nothing, so the keys
+  went dead. It now selects by ground truth -- the backlight whose DRM connector
+  is a CONNECTED internal panel (eDP/LVDS/DSI), resolving the discrete-GPU case
+  through its PCI node -- and falls back to the name list only when no connector
+  mapping exists. Covered by `tests/backlight-pick.sh`.
+- `audio/99-ryoku-audio-powersave.conf`: **the headphone hiss/whine that only
+  sounds while audio plays is gone.** The kernel default (`snd_hda_intel
+  power_save=10`) powers the codec and its headphone amp down ~10s after a stream
+  stops and back up on playback; on many codecs the amp's noise floor is a faint
+  high-frequency whine audible only while it is energised -- the "mosquito" /
+  tinnitus hiss on headphones, gone at idle. A new `/usr/lib/modprobe.d` drop-in
+  sets `power_save=0 power_save_controller=N` so the codec stays steady (nothing
+  re-writes it at runtime: power is power-profiles-daemon, not TLP). Shipped in
+  `ryoku-desktop` so it reaches everyone on update; no reboot needed to test
+  (`echo 0 | sudo tee /sys/module/snd_hda_intel/parameters/power_save`). Costs
+  ~0.3-0.5 W idle on laptops; override in `/etc/modprobe.d` to keep the saving on
+  hardware that does not hiss.
 - `input/72-ryoku-keyboard-uaccess.rules`: **the recorder's "show keyboard"
   keycast works for every user, not just the install account.** The daemon reads
   keyboard evdev to draw the keypress overlay, but keyboards are `root:input` and
@@ -46,6 +112,12 @@
   bug; it now asserts an unconfigured machine reads 100.
 
 ### Added
+- `bluetooth/99-ryoku-bt-autosuspend.conf`: **Bluetooth headphones stop dropping
+  seconds after they connect.** `btusb` autosuspends the controller in an audio
+  stream's idle gaps, and on combo Wi-Fi+BT chips (Intel AX2xx, Realtek RTL8761,
+  MediaTek MT7921) the resume races the link. A `modprobe.d` drop-in sets
+  `options btusb enable_autosuspend=0`, shipped by `ryoku-desktop`; reboot or
+  `modprobe -r btusb && modprobe btusb` to apply. `tests/controllers.sh` pins it.
 - `power/ryoku-game-tune` and `power/53-ryoku-game-tune.rules`: the system-level
   half of Game Mode. Deep CPU idle states off (C3 costs 350 us to leave on this
   hardware, C2 costs 18, so the choice is made by exit cost rather than by state

@@ -1,8 +1,9 @@
 import QtQuick
 import Quickshell
+import Ryoku.Ui.Singletons as Ui
 import "../../shared/Singletons"
 import "metrics.js" as MainMetrics
-import "../../shared/lib/fuzzy.js" as Fuzzy
+import "../../../../utils/fuzzy.js" as Fuzzy
 import "../../shared/lib/results.js" as Results
 
 // The result list: ranked rows from the dispatcher. A row is a mono icon, a
@@ -114,7 +115,7 @@ ListView {
                 anchors.left: parent.left
                 anchors.leftMargin: MainMetrics.padRow * list.s
                 anchors.verticalCenter: parent.verticalCenter
-                text: row.typeLabel.toUpperCase()
+                text: Ui.I18n.tr(row.typeLabel).toUpperCase()
                 color: Theme.faint
                 font.family: Theme.font
                 font.pixelSize: Metrics.fontEyebrow * list.s

@@ -137,7 +137,6 @@ func defaultMatugenConfig() matugenConfig {
 		Templates: map[string]bool{
 			"btop":      true,
 			"qt":        true,
-			"qt5":       true,
 			"gtk":       true,
 			"discord":   true,
 			"obs":       true,
@@ -154,10 +153,11 @@ func defaultMatugenConfig() matugenConfig {
 			"micro":     true,
 			"papirus":   true,
 			"obsidian":  true,
-			"kvantum":   true,
 			"zathura":   true,
 			"alacritty": true,
 			"tmux":      true,
+			"sidra":     true,
+			"ryotunes":  true,
 		},
 	}
 }
@@ -168,6 +168,16 @@ func matugenConfigPath() string {
 		base = filepath.Join(os.Getenv("HOME"), ".config")
 	}
 	return filepath.Join(base, "ryoku", "matugen.json")
+}
+
+func steamThemeReady() bool {
+	home := os.Getenv("HOME")
+	if home == "" {
+		return false
+	}
+
+	info, err := os.Stat(filepath.Join(home, ".steam", "steam", "steamui"))
+	return err == nil && info.IsDir()
 }
 
 func loadMatugenConfig() matugenConfig {
@@ -245,7 +255,6 @@ func renderActiveTemplates(cfg matugenConfig, pal map[string]string) {
 		filepath.Join(configHome(), "zed", "themes"),
 		filepath.Join(configHome(), "heroic", "store", "styles"),
 		filepath.Join(dataHome, "TelegramDesktop", "tdata"),
-		filepath.Join(home, ".steam", "steam", "steamui", "skins", "Material-Theme", "css", "main", "colors"),
 		filepath.Join(configHome(), "cava"),
 		filepath.Join(configHome(), "fish", "conf.d"),
 		filepath.Join(configHome(), "yazi"),
@@ -255,6 +264,9 @@ func renderActiveTemplates(cfg matugenConfig, pal map[string]string) {
 	}
 	for _, d := range targetDirs {
 		_ = os.MkdirAll(d, 0o755)
+	}
+	if steamThemeReady() {
+		_ = os.MkdirAll(filepath.Join(home, ".steam", "steam", "steamui", "skins", "Material-Theme", "css", "main", "colors"), 0o755)
 	}
 
 	carrierPath := filepath.Join(cacheDir, "matugen-carrier.json")
@@ -295,10 +307,11 @@ func renderActiveTemplates(cfg matugenConfig, pal map[string]string) {
 				switch appName {
 				case "gtk3", "gtk4":
 					groupKey = "gtk"
-				case "qt5ct":
-					groupKey = "qt5"
 				case "vesktop", "equibop":
 					groupKey = "discord"
+				}
+				if appName == "steam" && !steamThemeReady() {
+					continue
 				}
 				if enabled, ok := cfg.Templates[groupKey]; !ok || enabled {
 					activeSections = append(activeSections, secStr)

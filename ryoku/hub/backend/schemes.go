@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 )
 
 //go:embed schemes/light.json schemes/dark.json schemes/mono.json
@@ -57,6 +56,19 @@ func runMatugen(cfg, carrier string) {
 // keep the themed apps they already had.
 func themeAppsOn(s themeState) bool { return s.ThemeApps == nil || *s.ThemeApps }
 
+// gtkThemeChoice reports the GTK base-theme choice. Absent (an older theme.json)
+// reads as "adw", the libadwaita-consistent GTK3 theme that follows the palette.
+func gtkThemeChoice(s themeState) string {
+	if s.GtkTheme == "" {
+		return "adw"
+	}
+	return s.GtkTheme
+}
+
+// gnomeAccentOn reports whether the GNOME named accent tracks the palette. A
+// theme state without the key (an older theme.json) reads as on.
+func gnomeAccentOn(s themeState) bool { return s.GnomeAccent == nil || *s.GnomeAccent }
+
 // gtkOff is written to the generated GTK stylesheets when app theming is off, so
 // GTK / libadwaita apps drop the Ryoku palette and use their own stock colours.
 const gtkOff = "/* Ryoku: app theming is off; apps use their own colours. */\n"
@@ -83,47 +95,74 @@ func currentScheme() string {
 	return "custom"
 }
 
+// selectShellTheme sets shell.json theme.theme through the daemon, the one
+// writer of that file. theme.theme is the colour master: the daemon derives
+// theme.json's followWallpaper from it on every load and patch, so a scheme
+// change that only wrote theme.json (what this file used to do) was undone the
+// next time the daemon synced, and picking Wallpaper again in the shell was a
+// no-op because theme.theme already said so -- the desktop stuck on the wrong
+// palette. Best-effort: with no daemon (a TTY, a box mid-update) the caller's
+// theme.json write below still persists the choice and the daemon syncs at
+// its next load.
+func selectShellTheme(name string) {
+	_ = exec.Command("ryoku-shell", "theme", name).Run()
+}
+
 // applyScheme sets the desktop palette mode. follow re-derives from the current
 // wallpaper (the reset); light/dark lock a curated preset that survives wallpaper
 // changes (themePaletteLocked keeps it). Reused by the Appearance control.
 func applyScheme(mode string) error {
-	st := loadThemeState()
+	// Mono and the Ryoku-default brand palette are retired as fixed looks: the
+	// desktop follows the wallpaper by default now, so a mono request lands on
+	// the follow path instead of pinning a palette that never tracks the wall.
+	if mode == "mono" {
+		mode = "follow"
+	}
 	switch mode {
 	case "follow":
+		selectShellTheme("Wallpaper")
+		st := loadThemeState()
 		st.Scheme = ""
 		st.FollowWallpaper = true
 		saveThemeState(st)
 		// borders read the master: regen so they follow the wallpaper again.
-		if err := writeGeneratedLua(loadOverrides()); err != nil {
-			return err
-		}
+		// Best-effort: a box with no provider still persists the choice above.
+		_, _ = desktopClient().Apply(desktopStorePath())
 		// the daemon derives (honouring the per-image tune); no re-animation.
-		_ = exec.Command("ryoku-shell", "wallpaper", "repaint").Run()
-	case "light", "dark", "mono":
+		// Explicit, not left to the theme patch: when theme.theme already read
+		// Wallpaper the patch is a no-op and nothing else would repaint.
+		_ = exec.Command("ryogami", "wallpaper", "repaint").Run()
+	case "light", "dark":
 		pal, err := loadScheme(mode)
 		if err != nil {
 			return err
 		}
+		// Default is the shell's compiled base palette (the MONO card); the
+		// curated light/dark presets lock the apps and idle the wallpaper
+		// pipeline the same way. Anything but Wallpaper keeps followWallpaper
+		// off across daemon restarts.
+		selectShellTheme("Default")
+		st := loadThemeState()
 		st.Scheme = mode
 		st.FollowWallpaper = false
 		saveThemeState(st)
-		// borders read the master: regen so the fixed border colours pin now,
-		// not only on the next appearance save.
-		if err := writeGeneratedLua(loadOverrides()); err != nil {
-			return err
-		}
+		// borders read the master: regen so the fixed border colours pin now.
+		_, _ = desktopClient().Apply(desktopStorePath())
 		writePalette(pal)
-		// GTK apps re-read gtk.css when the colour-scheme preference flips; pin
-		// light/dark so libadwaita picks the freshly rendered palette up.
-		gtkScheme := "prefer-dark"
+		// The desktop's GTK settings (colour-scheme preference, the theme name
+		// for this mode, the accent) are the daemon's to write: it owns the
+		// resolver, and a second writer here would drift from it the moment the
+		// GTK theme preference changes. A curated scheme idles the paint worker,
+		// so ask explicitly rather than waiting for a repaint that never comes.
+		gtkMode := "dark"
 		if mode == "light" {
-			gtkScheme = "prefer-light"
+			gtkMode = "light"
 		}
-		_ = exec.Command("gsettings", "set", "org.gnome.desktop.interface", "color-scheme", gtkScheme).Run()
+		_ = exec.Command("ryoku-shell", "gtk", "apply", gtkMode).Run()
 	default:
-		return fmt.Errorf("unknown scheme %q (want follow|light|dark|mono)", mode)
+		return fmt.Errorf("unknown scheme %q (want follow|light|dark)", mode)
 	}
-	hyprReload()
+	reloadDesktop()
 	_ = exec.Command("pkill", "-USR1", "-x", "kitty").Run()
 	return nil
 }
@@ -131,10 +170,18 @@ func applyScheme(mode string) error {
 // currentThemeApps reports the app-theming toggle for the UI.
 func currentThemeApps() bool { return themeAppsOn(loadThemeState()) }
 
+// currentGtkTheme reports the GTK base-theme choice for the UI.
+func currentGtkTheme() string { return gtkThemeChoice(loadThemeState()) }
+
+// currentGnomeAccent reports the GNOME-accent sync toggle for the UI.
+func currentGnomeAccent() bool { return gnomeAccentOn(loadThemeState()) }
+
 // applyThemeApps sets whether the palette reaches GTK / GUI apps and re-fans the
 // live palette at once, so the toggle takes hold without a wallpaper change or a
 // scheme flip. renderApps honours the new flag (renders the GTK templates, or
-// blanks them); nudgeGtk then asks already-open GTK apps to re-read.
+// blanks them). An already-open GTK app keeps the colours it started with: it
+// re-reads neither the stylesheet nor the theme name on this session, so the
+// toggle shows up in the apps you open next.
 func applyThemeApps(on bool) error {
 	st := loadThemeState()
 	st.ThemeApps = &on
@@ -144,23 +191,50 @@ func applyThemeApps(on bool) error {
 	} else if !on {
 		blankGtk()
 	}
-	nudgeGtk()
+	repaintPalette()
 	return nil
 }
 
-// nudgeGtk forces already-open GTK / libadwaita apps to re-read the stylesheet
-// by flipping the GTK theme name off and back, the standard live-reload signal.
-func nudgeGtk() {
-	out, err := exec.Command("gsettings", "get", "org.gnome.desktop.interface", "gtk-theme").Output()
-	if err != nil {
-		return
+// applyGtkTheme records the GTK base-theme choice and asks the daemon to
+// re-apply. The daemon owns gtk-theme (C4): a repaint re-runs the palette
+// pipeline, which resolves the choice into a gtk-theme name for the current mode
+// (adw -> adw-gtk3[-dark], adwaita -> Adwaita[-dark], system -> left untouched),
+// writes it and nudges running apps. The hub writes no gsettings itself, and the
+// generated stylesheets are unchanged by the choice, so there is nothing to
+// re-render here.
+func applyGtkTheme(mode string) error {
+	switch mode {
+	case "adw", "adwaita", "system":
+	default:
+		return fmt.Errorf("unknown gtk theme %q (want adw|adwaita|system)", mode)
 	}
-	name := strings.Trim(strings.TrimSpace(string(out)), "'")
-	if name == "" {
-		return
-	}
-	_ = exec.Command("gsettings", "set", "org.gnome.desktop.interface", "gtk-theme", "").Run()
-	_ = exec.Command("gsettings", "set", "org.gnome.desktop.interface", "gtk-theme", name).Run()
+	st := loadThemeState()
+	st.GtkTheme = mode
+	saveThemeState(st)
+	repaintPalette()
+	return nil
+}
+
+// applyGnomeAccent records whether the desktop accent-color tracks the palette
+// and asks the daemon to re-apply. The daemon owns accent-color (C4): on a
+// repaint it reads the palette primary and, when this is on, writes the nearest
+// named GNOME accent so apps reading the system setting follow along.
+func applyGnomeAccent(on bool) error {
+	st := loadThemeState()
+	st.GnomeAccent = &on
+	saveThemeState(st)
+	repaintPalette()
+	return nil
+}
+
+// repaintPalette asks the daemon to re-run the palette pipeline in place, with
+// no re-animation: the single seam that re-resolves and writes the toolkit
+// settings the daemon owns (gtk-theme, color-scheme, accent-color) from
+// theme.json. Best-effort, like applyScheme's own repaint -- the persisted
+// theme.json is the durable truth, and a box with no live daemon picks the
+// choice up at the next login; the setters lean on this only for the live nudge.
+func repaintPalette() {
+	_ = exec.Command("ryogami", "wallpaper", "repaint").Run()
 }
 
 // themeState persists the palette master: whether colours follow the wallpaper
@@ -170,6 +244,15 @@ type themeState struct {
 	FollowWallpaper bool   `json:"followWallpaper"`
 	Scheme          string `json:"scheme"`
 	ThemeApps       *bool  `json:"themeApps,omitempty"`
+	// GtkTheme is the GTK base-theme choice: "adw" (default; the
+	// libadwaita-consistent GTK3 theme that follows the palette), "adwaita" (the
+	// stock GNOME look) or "system" (Ryoku never writes gtk-theme). Absent reads
+	// as "adw".
+	GtkTheme string `json:"gtkTheme,omitempty"`
+	// GnomeAccent, when on (the default), syncs org.gnome.desktop.interface
+	// accent-color to the nearest named accent so Flatpak and GNOME apps that
+	// read the system setting follow the palette too. Absent reads as on.
+	GnomeAccent *bool `json:"gnomeAccent,omitempty"`
 }
 
 func themeStatePath() string {
@@ -243,10 +326,12 @@ func applyRyokuTheme() error {
 		"osdRadius":   0,
 		"fontFamily":  "Space Grotesk",
 	})
-	// square window corners: pin the appearance override the daemon reads.
-	o := loadOverrides()
-	o.Appearance.Rounding = 0
-	_ = saveOverrides(o)
+	// square window corners: pin the appearance override the provider reads.
+	_ = withDesktopLock(func() error {
+		ns := readJSONMap(desktopStorePath())
+		childMap(childMap(ns, "desktop"), "appearance")["rounding"] = 0
+		return atomicWrite(desktopStorePath(), mustJSON(ns), 0o644)
+	})
 	// GTK type now; the Hyprland autostart pins it on the next login.
 	_ = exec.Command("gsettings", "set", "org.gnome.desktop.interface", "font-name", "Space Grotesk 11").Run()
 	// clear any active-rice marker: the signature is a fresh look, not a rice,
@@ -255,8 +340,9 @@ func applyRyokuTheme() error {
 	// the Ryoku mark: the 力 glyph, no custom logo, tinted to the accent, so the
 	// signature brand reads as Ryoku (the desktop name is left as the user set it).
 	mergeBrandJSON(map[string]any{"markText": "力", "markImage": "", "markTint": true})
-	// grainy-mono palette + regen the border lua, reload hypr and kitty.
-	return applyScheme("mono")
+	// colours follow the wallpaper (mono is retired) + regen the border lua,
+	// reload hypr and kitty.
+	return applyScheme("follow")
 }
 
 // mergeShellJSON overlays keys onto shell.json, mergeBrandJSON onto brand.json;

@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"ryoku-cli/internal/sys"
+
+	i18n "ryoku-i18n"
+	wm "ryoku-wm"
 )
 
 // ---- diagnostic report -------------------------------------------------------
@@ -36,9 +39,24 @@ func writeReport(override string, findings []finding) (string, error) {
 // are otherwise absent from a report a maintainer reads.
 var diagnosticPackages = []string{
 	"ryoku-desktop", "ryoku", "ryoku-shell", "ryoku-hub", "ryoku-blobs", "ryoku-rashin",
-	"quickshell", "hyprland", "xdg-desktop-portal-hyprland",
+	"quickshell",
 	"qt6-base", "qt6-declarative", "qt6-wayland",
 	"pipewire", "wireplumber", "nvidia-utils", "mesa", "limine", "snapper",
+}
+
+// compositorDiagnosticPackages: the live compositor's own stack, so a report
+// carries the versions that decide the session instead of naming another
+// compositor's. With nothing live (the case a report is usually read for) both
+// providers' stacks are listed, since which one was meant may be the question.
+func compositorDiagnosticPackages() []string {
+	byName := map[string][]string{
+		"hyprland": {"hyprland", "xdg-desktop-portal-hyprland"},
+		"niri":     {"niri", "xwayland-satellite", "xdg-desktop-portal-gnome"},
+	}
+	if name := wm.Detect().Name; byName[name] != nil {
+		return byName[name]
+	}
+	return []string{"hyprland", "xdg-desktop-portal-hyprland", "niri", "xwayland-satellite", "xdg-desktop-portal-gnome"}
 }
 
 // gatherReport: one self-contained text report. doctor findings, then the
@@ -53,10 +71,10 @@ func gatherReport(findings []finding) string {
 		line("%s", captureOut(name, args...))
 	}
 
-	line("Ryoku diagnostic report")
+	line(i18n.T("Ryoku diagnostic report"))
 	line("generated: %s", time.Now().Format(time.RFC3339))
-	line("Safe to share with the Ryoku maintainers: system state and recent error")
-	line("logs only, no passwords or keys. Open an issue: %s", ryokuIssuesURL)
+	line(i18n.T("Safe to share with the Ryoku maintainers: system state and recent error"))
+	line(i18n.T("logs only, no passwords or keys. Open an issue: %s"), ryokuIssuesURL)
 	line(strings.Repeat("=", 70))
 
 	section("doctor findings")
@@ -83,7 +101,7 @@ func gatherReport(findings []finding) string {
 	line("/etc/conf.d/snapper:\n%s", readFileSafe("/etc/conf.d/snapper"))
 
 	section("packages")
-	cmd("pacman", append([]string{"-Q"}, diagnosticPackages...)...)
+	cmd("pacman", append(append([]string{"-Q"}, diagnosticPackages...), compositorDiagnosticPackages()...)...)
 	cmd("pacman", "-Qtdq")
 	cmd("pacman", "-Dk")
 	line(".pacnew files:\n%s", captureOut("find", "/etc", "-name", "*.pacnew"))
@@ -97,9 +115,11 @@ func gatherReport(findings []finding) string {
 	section("desktop")
 	cmd("ryoku-shell", "status")
 	cmd("pgrep", "-af", "quickshell")
-	for _, v := range []string{"WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE", "HYPRLAND_INSTANCE_SIGNATURE"} {
+	for _, v := range []string{"WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE"} {
 		line("%s=%s", v, os.Getenv(v))
 	}
+	d := wm.Detect()
+	line("window manager: name=%s live=%t source=%s", d.Name, d.Live, d.Source)
 
 	section("hardware")
 	bl := backlightDevices()
@@ -132,4 +152,19 @@ func gatherReport(findings []finding) string {
 		"coredumpctl list --no-pager 2>/dev/null | grep -iE 'Hyprland|Xwayland|quickshell|aquamarine' | tail -10 || true"))
 
 	return b.String()
+}
+
+// Debug prints the shareable diagnostic bundle to stdout so a bug reporter can
+// pipe or paste it straight into an issue. Same read-only content as
+// `doctor --report` (system state and recent error logs, no secrets); it just
+// goes to stdout instead of a file. Referenced by the bug issue template.
+func Debug(args []string) error {
+	for _, a := range args {
+		if a == "-h" || a == "--help" {
+			fmt.Println(i18n.T("Usage: ryoku debug   # print a shareable diagnostic bundle for bug reports"))
+			return nil
+		}
+	}
+	fmt.Print(gatherReport(runReconcilers(true)))
+	return nil
 }

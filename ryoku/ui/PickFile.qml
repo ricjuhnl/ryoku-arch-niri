@@ -5,6 +5,7 @@ import QtQuick.Controls
 import Qt.labs.folderlistmodel
 import Quickshell
 import "Singletons"
+import Ryoku.Ui.Singletons
 
 // A monochrome file/folder picker modal (DESIGN.md section 6 overlay:
 // paperLift + lineStrong, no shadow). Shared by every surface that needs to
@@ -19,19 +20,30 @@ Item {
     // override the image glob for non-image pickers (e.g. ["*.svg"], ["*.txt"],
     // ["*.ryoprofile"]); empty keeps the default image set (png/jpg/webp/gif/svg).
     property var fileFilters: []
-    property string title: "Choose a file"
+    property string title: I18n.tr("Choose a file")
+    property string emptyText: ""
     property string home: Quickshell.env("HOME") || ""
     property url startFolder: "file://" + fp.home + "/Pictures"
     property url currentFolder: fp.startFolder
     signal picked(string path)
     signal canceled()
 
-    function open() { fp.currentFolder = fp.startFolder; fp.active = true; }
+    function open() {
+        fp.currentFolder = fp.startFolder;
+        fp.active = true;
+        fp.forceActiveFocus();
+    }
     function goHome(sub) { fp.currentFolder = "file://" + fp.home + (sub.length ? "/" + sub : ""); }
 
     anchors.fill: parent
     visible: fp.active
     z: 200
+    focus: fp.active
+    onActiveChanged: if (fp.active) fp.forceActiveFocus()
+    Keys.onEscapePressed: (event) => {
+        fp.canceled();
+        event.accepted = true;
+    }
 
     FolderListModel {
         id: fm
@@ -86,10 +98,10 @@ Item {
             id: fpNav
             anchors { left: parent.left; top: fpTitle.bottom; leftMargin: Tokens.s5; topMargin: Tokens.s5 }
             spacing: Tokens.s2
-            Btn { text: "UP"; onAct: fp.currentFolder = fm.parentFolder }
-            Btn { text: "HOME"; onAct: fp.goHome("") }
-            Btn { text: "PICTURES"; onAct: fp.goHome("Pictures") }
-            Btn { text: "DOWNLOADS"; onAct: fp.goHome("Downloads") }
+            Btn { text: I18n.tr("UP"); onAct: fp.currentFolder = fm.parentFolder }
+            Btn { text: I18n.tr("HOME"); onAct: fp.goHome("") }
+            Btn { text: I18n.tr("PICTURES"); onAct: fp.goHome("Pictures") }
+            Btn { text: I18n.tr("DOWNLOADS"); onAct: fp.goHome("Downloads") }
         }
 
         GridView {
@@ -122,11 +134,12 @@ Item {
                     anchors.fill: parent
                     anchors.margins: Tokens.s1
                     radius: Tokens.radius
-                    color: fpTile.fileIsDir && tHov.hovered ? Tokens.tint5 : "transparent"
+                    color: fpTile.fileIsDir ? (tap.pressed ? Tokens.tint16 : (tHov.hovered ? Tokens.tint5 : "transparent")) : "transparent"
                     border.width: Tokens.border
                     border.color: tHov.hovered ? Tokens.lineStrong : Tokens.line
                     clip: true
                     Behavior on border.color { ColorAnimation { duration: Tokens.snap } }
+                    Behavior on color { ColorAnimation { duration: Tokens.snap } }
 
                     Column {
                         visible: fpTile.fileIsDir
@@ -134,7 +147,7 @@ Item {
                         spacing: Tokens.s2
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
-                            text: "DIR"
+                            text: I18n.tr("DIR")
                             color: Tokens.inkMuted
                             font.family: Tokens.mono
                             font.pixelSize: Tokens.fTiny
@@ -203,6 +216,7 @@ Item {
                     }
                     HoverHandler { id: tHov; cursorShape: Qt.PointingHandCursor }
                     TapHandler {
+                        id: tap
                         onTapped: {
                             if (fpTile.fileIsDir) fp.currentFolder = fpTile.fileUrl;
                             else fp.picked("" + fpTile.fileUrl);
@@ -215,7 +229,9 @@ Item {
         Text {
             anchors.centerIn: fpGrid
             visible: fm.status === FolderListModel.Ready && fm.count === 0
-            text: fp.foldersOnly ? "No folders here" : "No images or folders here"
+            text: fp.emptyText !== ""
+                ? fp.emptyText
+                : (fp.foldersOnly ? I18n.tr("No folders here") : I18n.tr("No images or folders here"))
             color: Tokens.inkMuted
             font.family: Tokens.ui
             font.pixelSize: Tokens.fSmall
@@ -229,13 +245,13 @@ Item {
             Btn {
                 visible: fp.foldersOnly
                 anchors { left: parent.left; leftMargin: Tokens.s4; verticalCenter: parent.verticalCenter }
-                text: "USE THIS FOLDER"
+                text: I18n.tr("USE THIS FOLDER")
                 primary: true
                 onAct: fp.picked("" + fp.currentFolder)
             }
             Btn {
                 anchors { right: parent.right; rightMargin: Tokens.s4; verticalCenter: parent.verticalCenter }
-                text: "CANCEL"
+                text: I18n.tr("CANCEL")
                 onAct: fp.canceled()
             }
         }

@@ -20,6 +20,7 @@ Item {
     signal installRequested(var item)
     signal detailsRequested(var item)
     signal settingsRequested(var item)
+    signal removeRequested(var item)
 
     readonly property var displayItem: previewItem || item || ({})
     readonly property var actionItem: item || ({})
@@ -50,7 +51,7 @@ Item {
     clip: true
 
     function triggerInstall() {
-        if (hasActionItem && StoreLogic.primaryAction(actionItem) !== "INSTALLED" && busyKey === "")
+        if (hasActionItem && StoreLogic.primaryAction(actionItem) !== "INSTALLED" && busyKey === "" && !StoreLogic.isDownloadPaused(actionItem))
             installRequested(actionItem);
     }
 
@@ -62,6 +63,11 @@ Item {
     function triggerSettings() {
         if (hasActionItem && secondaryLabel !== "")
             settingsRequested(actionItem);
+    }
+
+    function triggerRemove() {
+        if (hasActionItem && busyKey === "" && StoreLogic.isInstalled(actionItem))
+            removeRequested(actionItem);
     }
 
     function revealArtwork() {
@@ -227,16 +233,47 @@ Item {
             offline: stage.offline
         }
 
+        Text {
+            objectName: "ryostore-stage-foreign-wm"
+            width: parent.width
+            visible: StoreLogic.isUnavailable(stage.displayItem)
+            text: StoreLogic.unavailableReason(stage.displayItem).length > 0
+                ? StoreLogic.unavailableReason(stage.displayItem)
+                : StoreLogic.unavailableLabel(stage.displayItem)
+            color: Tokens.inkDim
+            font.family: Tokens.ui
+            font.pixelSize: Tokens.fSmall
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+            maximumLineCount: 3
+            elide: Text.ElideRight
+        }
+
+        Text {
+            objectName: "ryostore-stage-pause"
+            width: parent.width
+            visible: StoreLogic.isDownloadPaused(stage.displayItem)
+            text: I18n.tr("Under construction.") + " " + StoreLogic.downloadPauseReason(stage.displayItem)
+            color: Tokens.inkDim
+            font.family: Tokens.ui
+            font.pixelSize: Tokens.fSmall
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+            maximumLineCount: 3
+            elide: Text.ElideRight
+        }
+
         Row {
             spacing: Tokens.s2
 
             Btn {
                 objectName: "ryostore-stage-primary"
-                text: stage.primaryLabel
+                text: I18n.tr(stage.primaryLabel)
                 primary: true
                 armed: stage.hasActionItem
                         && StoreLogic.primaryAction(stage.actionItem) !== "INSTALLED"
                         && stage.busyKey === ""
+                        && !StoreLogic.isDownloadPaused(stage.actionItem)
                 Accessible.role: Accessible.Button
                 Accessible.name: text
                 onAct: stage.triggerInstall()
@@ -255,13 +292,24 @@ Item {
 
             Btn {
                 objectName: "ryostore-stage-settings"
-                text: stage.secondaryLabel
+                text: I18n.tr(stage.secondaryLabel)
                 visible: text !== ""
                 armed: visible && stage.hasActionItem
                 Accessible.role: Accessible.Button
                 Accessible.name: text
                 onAct: stage.triggerSettings()
                 Accessible.onPressAction: stage.triggerSettings()
+            }
+
+            Btn {
+                objectName: "ryostore-stage-remove"
+                text: I18n.tr("REMOVE")
+                visible: StoreLogic.isInstalled(stage.actionItem)
+                armed: visible && stage.busyKey === ""
+                Accessible.role: Accessible.Button
+                Accessible.name: text
+                onAct: stage.triggerRemove()
+                Accessible.onPressAction: stage.triggerRemove()
             }
         }
     }

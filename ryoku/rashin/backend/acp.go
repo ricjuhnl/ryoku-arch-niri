@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -60,6 +63,7 @@ type AcpEvent struct {
 	StopReason   string
 	Models       []ModelInfo
 	CurrentModel string
+	AgentName    string
 	Commands     []CommandInfo
 	SessionID    string
 	SessionTitle string
@@ -97,7 +101,39 @@ type acpConn struct {
 	// when the dashboard and the terminal race to answer it.
 	answeredPerms map[int64]bool
 
+	// configStamp is the hermes config the process loaded at spawn; hermes
+	// reads config.yaml and .env once, so a session outlives a `hermes setup`
+	// run in a terminal with the old provider and keys (issue 145).
+	configStamp string
+
+	// negotiated at initialize: the agreed protocol version and the agent's
+	// optional capabilities. ACP methods beyond the baseline (session/load) and
+	// image prompt content are gated on these so a minimal agent never chokes.
+	protoVersion int
+	loadSession  bool
+	promptImages bool
+	// agentName is the chat backend's display name (Hermes, Oh My Pi, ...), so
+	// the UI can label the session even when the agent advertises no model list.
+	agentName string
+
 	events chan AcpEvent
+}
+
+// hermesConfigStamp fingerprints the files hermes loads at startup.
+func hermesConfigStamp() string {
+	var b strings.Builder
+	for _, p := range []string{hermesConfig(), filepath.Join(home(), ".hermes", ".env")} {
+		if st, err := os.Stat(p); err == nil {
+			fmt.Fprintf(&b, "%s:%d:%d;", p, st.ModTime().UnixNano(), st.Size())
+		}
+	}
+	return b.String()
+}
+
+// stale reports that hermes's config changed since this process started, so
+// its provider and keys no longer match what the terminal runs.
+func (c *acpConn) stale() bool {
+	return c.configStamp != hermesConfigStamp()
 }
 
 func newACPConn(in io.Writer, out io.Reader, closer io.Closer) *acpConn {
@@ -183,16 +219,22 @@ type sessionResult struct {
 	} `json:"models"`
 }
 
+// emitModels always emits a models event for a fresh session, carrying the
+// backend's name so the UI can label the agent even when it advertises no
+// models (omp, for one). A stale model from a different backend is never shown.
 func (c *acpConn) emitModels(res json.RawMessage) {
 	var out sessionResult
-	if json.Unmarshal(res, &out) != nil || out.Models == nil {
-		return
+	_ = json.Unmarshal(res, &out)
+	var ms []ModelInfo
+	current := ""
+	if out.Models != nil {
+		ms = make([]ModelInfo, 0, len(out.Models.Available))
+		for _, m := range out.Models.Available {
+			ms = append(ms, ModelInfo{ID: m.ModelID, Name: m.Name, Description: m.Description})
+		}
+		current = out.Models.CurrentModelID
 	}
-	ms := make([]ModelInfo, 0, len(out.Models.Available))
-	for _, m := range out.Models.Available {
-		ms = append(ms, ModelInfo{ID: m.ModelID, Name: m.Name, Description: m.Description})
-	}
-	c.emit(AcpEvent{Type: "models", Models: ms, CurrentModel: out.Models.CurrentModelID})
+	c.emit(AcpEvent{Type: "models", Models: ms, CurrentModel: current, AgentName: c.agentName})
 }
 
 // reconcileModel keeps a fresh session on the remembered model, and remembers
@@ -233,19 +275,52 @@ func (c *acpConn) reconcileModel(res json.RawMessage, method string) {
 	}
 }
 
-// Initialize performs the ACP handshake and opens the vault session.
+// acpClientVersion is the latest ACP protocol version this client speaks.
+const acpClientVersion = 1
+
+// Initialize performs the ACP handshake and opens the vault session. It sends
+// our client info and the version we speak, then records what the agent
+// negotiated back so optional methods stay gated to what the agent supports.
 func (c *acpConn) Initialize(vault string) error {
 	c.vault = vault
-	_, err := c.request("initialize", map[string]any{
-		"protocolVersion": 1,
+	c.protoVersion = acpClientVersion
+	res, err := c.request("initialize", map[string]any{
+		"protocolVersion": acpClientVersion,
 		"clientCapabilities": map[string]any{
-			"fs": map[string]bool{"readTextFile": false, "writeTextFile": false},
+			"fs":       map[string]bool{"readTextFile": false, "writeTextFile": false},
+			"terminal": false,
+		},
+		"clientInfo": map[string]any{
+			"name": "ryoku-rashin", "title": "Ryoku Rashin", "version": "1",
 		},
 	})
 	if err != nil {
 		return err
 	}
+	c.applyInitResult(res)
 	return c.openSession("session/new", map[string]any{"cwd": vault, "mcpServers": prowlMCPServers()})
+}
+
+// applyInitResult records the negotiated protocol version and the agent's
+// optional capabilities from the initialize response.
+func (c *acpConn) applyInitResult(res json.RawMessage) {
+	var out struct {
+		ProtocolVersion int `json:"protocolVersion"`
+		AgentCapabilities struct {
+			LoadSession        bool `json:"loadSession"`
+			PromptCapabilities struct {
+				Image bool `json:"image"`
+			} `json:"promptCapabilities"`
+		} `json:"agentCapabilities"`
+	}
+	if json.Unmarshal(res, &out) != nil {
+		return
+	}
+	if out.ProtocolVersion > 0 {
+		c.protoVersion = out.ProtocolVersion
+	}
+	c.loadSession = out.AgentCapabilities.LoadSession
+	c.promptImages = out.AgentCapabilities.PromptCapabilities.Image
 }
 
 // openSession issues new/load and installs the returned session id.
@@ -274,6 +349,9 @@ func (c *acpConn) NewSession() error {
 // LoadSession switches to a stored session; hermes replays its transcript as
 // session/update notifications before the response arrives.
 func (c *acpConn) LoadSession(id string) error {
+	if !c.loadSession {
+		return errors.New("this agent does not support loading past sessions")
+	}
 	c.emit(AcpEvent{Type: "replay_start"})
 	err := c.openSession("session/load", map[string]any{
 		"sessionId": id, "cwd": c.vault, "mcpServers": prowlMCPServers(),
@@ -354,10 +432,14 @@ func (c *acpConn) Prompt(text string, images []PromptImage) {
 	if text != "" {
 		blocks = append(blocks, map[string]any{"type": "text", "text": text})
 	}
-	for _, im := range images {
-		blocks = append(blocks, map[string]any{
-			"type": "image", "data": im.Data, "mimeType": im.MimeType,
-		})
+	// Only attach images when the agent advertised image prompt support; a
+	// text-only agent would otherwise reject the whole turn.
+	if c.promptImages {
+		for _, im := range images {
+			blocks = append(blocks, map[string]any{
+				"type": "image", "data": im.Data, "mimeType": im.MimeType,
+			})
+		}
 	}
 	if len(blocks) == 0 {
 		return
@@ -588,13 +670,16 @@ func (c *acpConn) handleUpdate(params json.RawMessage) {
 	}
 }
 
-// startACP spawns hermes acp with the vault as its working directory.
+// startACP spawns the configured chat agent's ACP command with the vault as its
+// working directory. Hermes is the recommended default; resolveChatBackend
+// falls back to it when a chosen agent's adapter is absent.
 func startACP(vault string) (*acpConn, error) {
-	bin, ok := FindHermes()
+	b, ok := resolveChatBackend(LoadConfig())
 	if !ok {
-		return nil, errors.New("hermes not installed")
+		return nil, errors.New("no chat agent available; install Hermes (recommended) or a supported ACP agent")
 	}
-	cmd := exec.Command(bin, "acp")
+	stamp := hermesConfigStamp()
+	cmd := exec.Command(b.Argv[0], b.Argv[1:]...)
 	cmd.Dir = vault
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -609,6 +694,8 @@ func startACP(vault string) (*acpConn, error) {
 		return nil, err
 	}
 	c := newACPConn(stdin, stdout, stdin)
+	c.configStamp = stamp
+	c.agentName = b.Name
 	go func() { _ = cmd.Wait() }()
 	return c, nil
 }

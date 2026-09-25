@@ -26,14 +26,16 @@ Item {
     readonly property var keys: [
         "clockEnabled", "clockDesign", "clock24h", "clockSeconds", "clockScale",
         "clockOpacity", "clockRadius", "clockAccent", "clockBg", "clockAnchor",
-        "clockX", "clockY", "clockLocked", "dateShow", "dateDesign",
+        "clockX", "clockY", "clockLocked", "dateShow", "dateDesign", "widgetFont",
         "calendarEnabled", "calendarStyle", "calendarWeeks", "calendarWeekNumbers",
         "calendarHolidayRegion", "calendarScale", "calendarOpacity", "calendarAnchor",
         "calendarX", "calendarY", "calendarLocked",
-        "musicEnabled", "musicStyle", "musicLyrics", "musicScale", "musicOpacity",
+        "musicEnabled", "musicStyle", "musicLyrics", "musicViz", "musicScale", "musicOpacity",
         "musicAnchor", "musicX", "musicY", "musicLocked", "musicApp",
         "aioEnabled", "aioStyle", "aioScale", "aioOpacity", "aioAnchor", "aioX", "aioY", "aioLocked",
-        "statsEnabled", "statsScale", "statsOpacity", "statsAnchor", "statsX", "statsY", "statsLocked"
+        "statsEnabled", "statsScale", "statsOpacity", "statsAnchor", "statsX", "statsY", "statsLocked",
+        "weatherEnabled", "weatherDesign", "weatherScale", "weatherOpacity", "weatherAnchor", "weatherX", "weatherY", "weatherLocked",
+        "notesEnabled", "notesScale", "notesOpacity", "notesWidth", "notesHeight", "notesAnchor", "notesX", "notesY", "notesLocked"
     ]
 
     // Factory values mirror the wallpaper clock's canonical Config defaults.
@@ -41,33 +43,63 @@ Item {
         "clockEnabled": true, "clockDesign": "digital", "clock24h": true, "clockSeconds": false,
         "clockScale": 1.0, "clockOpacity": 1.0, "clockRadius": 26, "clockAccent": "palette",
         "clockBg": "none", "clockAnchor": "top-left", "clockX": 72, "clockY": 64, "clockLocked": false,
-        "dateShow": true, "dateDesign": "inline",
+        "dateShow": true, "dateDesign": "inline", "widgetFont": "",
         "calendarEnabled": true, "calendarStyle": "glass", "calendarWeeks": 6,
         "calendarWeekNumbers": true, "calendarHolidayRegion": "", "calendarScale": 1.0,
         "calendarOpacity": 1.0, "calendarAnchor": "bottom-right", "calendarX": 80,
         "calendarY": 80, "calendarLocked": false,
-        "musicEnabled": false, "musicStyle": "cover", "musicLyrics": true,
+        "musicEnabled": false, "musicStyle": "cover", "musicLyrics": true, "musicViz": "bars",
         "musicScale": 1.0, "musicOpacity": 1.0, "musicAnchor": "bottom-left",
         "musicX": 80, "musicY": 80, "musicLocked": false, "musicApp": "",
         "aioEnabled": false, "aioStyle": "wide", "aioScale": 1.0, "aioOpacity": 1.0,
         "aioAnchor": "top-right", "aioX": 80, "aioY": 80, "aioLocked": false,
         "statsEnabled": false, "statsScale": 1.0, "statsOpacity": 1.0,
-        "statsAnchor": "bottom-right", "statsX": 80, "statsY": 80, "statsLocked": false
+        "statsAnchor": "bottom-right", "statsX": 80, "statsY": 80, "statsLocked": false,
+        "weatherEnabled": false, "weatherDesign": "compact", "weatherScale": 1.0, "weatherOpacity": 1.0,
+        "weatherAnchor": "top-right", "weatherX": 80, "weatherY": 80, "weatherLocked": false,
+        "notesEnabled": false, "notesScale": 1.0, "notesOpacity": 1.0, "notesWidth": 260, "notesHeight": 180,
+        "notesAnchor": "right", "notesX": 80, "notesY": 80, "notesLocked": false
     })
 
     // Scale and opacity persist as ratios; the sheet edits integer percents.
     readonly property var pctKeys: ({
         "clockOpacity": true, "calendarOpacity": true, "musicOpacity": true,
-        "aioOpacity": true, "statsOpacity": true
+        "aioOpacity": true, "statsOpacity": true, "weatherOpacity": true, "notesOpacity": true
     })
     readonly property var scaleKeys: ({
         "clockScale": true, "calendarScale": true, "musicScale": true,
-        "aioScale": true, "statsScale": true
+        "aioScale": true, "statsScale": true, "weatherScale": true, "notesScale": true
     })
 
     property var draft: ({})
     property var committed: ({})
     property bool loaded: false
+
+    // Widget-font picker source. The bundled NibrasShell display faces (mirrors
+    // the shell's Fonts singleton -- these live in the shell process, not
+    // fontconfig, so they are named here as literals) come first, then every
+    // installed family, read live like the Global page's system-font picker.
+    // Injected into the widgetFont row's options so all fonts are reachable.
+    readonly property var bundledFonts: [
+        "Reckoner", "Reckoner Bold", "JF Flat", "Abberancy", "Daydream",
+        "sabana", "Unrealised", "VIP Rawy Regular", "Xenophobia",
+        "VEXA light R", "Overhead BRK"
+    ]
+    property var fontList: []
+    readonly property var fontOptions: pg.bundledFonts.concat(pg.fontList)
+
+    Process {
+        id: fonts
+        running: true
+        command: ["bash", "-c", "fc-list : family | cut -d, -f1 | sort -u"]
+        stdout: StdioCollector {
+            id: fontsOut
+            onStreamFinished: {
+                var t = ("" + fontsOut.text).trim();
+                pg.fontList = t.length > 0 ? t.split("\n").filter(function (x) { return x.length > 0; }) : [];
+            }
+        }
+    }
 
     function readAdapter() {
         var m = {};
@@ -148,6 +180,8 @@ Item {
             } else if (pg.scaleKeys[r.key]) {
                 c.ctl = "slid"; c.lo = 50; c.hi = 250; c.unit = "%"; c.pct = false;
             }
+            if (r.key === "widgetFont")
+                c.opts = pg.fontOptions;
             out.push(c);
         }
         return out;
@@ -293,6 +327,7 @@ Item {
             property bool clockLocked: false
             property bool dateShow: true
             property string dateDesign: "inline"
+            property string widgetFont: ""
             property bool calendarEnabled: true
             property string calendarStyle: "glass"
             property int calendarWeeks: 6
@@ -307,6 +342,7 @@ Item {
             property bool musicEnabled: false
             property string musicStyle: "cover"
             property bool musicLyrics: true
+            property string musicViz: "bars"
             property real musicScale: 1.0
             property real musicOpacity: 1.0
             property string musicAnchor: "bottom-left"
@@ -329,17 +365,42 @@ Item {
             property int statsX: 80
             property int statsY: 80
             property bool statsLocked: false
+            property bool weatherEnabled: false
+            property string weatherDesign: "compact"
+            property real weatherScale: 1.0
+            property real weatherOpacity: 1.0
+            property string weatherAnchor: "top-right"
+            property int weatherX: 80
+            property int weatherY: 80
+            property bool weatherLocked: false
+            property bool notesEnabled: false
+            property real notesScale: 1.0
+            property real notesOpacity: 1.0
+            property int notesWidth: 260
+            property int notesHeight: 180
+            property string notesAnchor: "right"
+            property int notesX: 80
+            property int notesY: 80
+            property bool notesLocked: false
         }
     }
 
     // ── head: eyebrow, Fraunces title, blurb (matches every settings page) ──
     Column {
         id: head
-        anchors { left: parent.left; right: parent.right; top: parent.top }
-        anchors.leftMargin: Tokens.s6; anchors.rightMargin: Tokens.s6; anchors.topMargin: Tokens.s6
-        spacing: Tokens.s2
+        anchors.top: parent.top
+        anchors.topMargin: Tokens.s6
+        // the head sits on the body's grid, so the title starts over the first card
+        x: Tokens.s6
+        width: Math.max(320, pg.width - Tokens.s6 * 2 - Tokens.s3)
+        // the register row sits off the title: a rule over a 32px
+        // title needs more than the gap between two lines of body text
+        spacing: Tokens.s3
 
         Row {
+            // the register row holds a fixed box, so the rule and the seal keep
+            // their distance from the title on every page
+            height: Tokens.s5
             spacing: Tokens.s2
             Rectangle {
                 width: 16; height: 1; color: Tokens.ink
@@ -361,19 +422,10 @@ Item {
         }
         Text {
             width: Math.min(parent.width, 720)
-            text: I18n.tr("Every widget that rides your wallpaper — the clock, the all-in-one card, system stats, calendar and now-playing. Pick a card to preview it live and open its settings; nothing lands on the desktop until you save.")
+            text: I18n.tr("The widgets on your wallpaper, previewed live.")
             color: Tokens.inkMuted; font.family: Tokens.ui
             font.pixelSize: Tokens.fBody; wrapMode: Text.WordWrap
         }
-    }
-
-    // marginalia dressing the head's empty right margin (running head). Ink only.
-    Marginalia {
-        anchors { right: parent.right; top: head.top }
-        anchors.rightMargin: Tokens.s6; anchors.topMargin: Tokens.s1
-        kana: "部品"
-        index: "03"; label: I18n.tr("DESKTOP")
-        glyph: "wave"; glyph2: "column"
     }
 
     // ── the widget catalogue: a card per widget; a card opens its settings ────
@@ -383,11 +435,13 @@ Item {
     property string selected: ""   // "" = grid; else the open widget's tab
 
     readonly property var widgets: [
-        { "tab": "clock",    "title": "Clock",        "jp": "時計", "enable": "clockEnabled",    "anchor": "clockAnchor",    "natW": 300, "natH": 150 },
-        { "tab": "aio",      "title": "All-in-one",   "jp": "一体", "enable": "aioEnabled",      "anchor": "aioAnchor",      "natW": 354, "natH": 227 },
-        { "tab": "stats",    "title": "System Stats", "jp": "統計", "enable": "statsEnabled",    "anchor": "statsAnchor",    "natW": 261, "natH": 458 },
-        { "tab": "calendar", "title": "Calendar",     "jp": "暦",   "enable": "calendarEnabled", "anchor": "calendarAnchor", "natW": 330, "natH": 210 },
-        { "tab": "music",    "title": "Music",        "jp": "音楽", "enable": "musicEnabled",    "anchor": "musicAnchor",    "natW": 400, "natH": 216 }
+        { "tab": "clock",    "title": I18n.tr("Clock"),        "jp": "時計", "enable": "clockEnabled",    "anchor": "clockAnchor",    "natW": 300, "natH": 150 },
+        { "tab": "aio",      "title": I18n.tr("All-in-one"),   "jp": "一体", "enable": "aioEnabled",      "anchor": "aioAnchor",      "natW": 354, "natH": 227 },
+        { "tab": "stats",    "title": I18n.tr("System Stats"), "jp": "統計", "enable": "statsEnabled",    "anchor": "statsAnchor",    "natW": 261, "natH": 458 },
+        { "tab": "calendar", "title": I18n.tr("Calendar"),     "jp": "暦",   "enable": "calendarEnabled", "anchor": "calendarAnchor", "natW": 330, "natH": 210 },
+        { "tab": "music",    "title": I18n.tr("Music"),        "jp": "音楽", "enable": "musicEnabled",    "anchor": "musicAnchor",    "natW": 400, "natH": 216 },
+        { "tab": "weather",  "title": I18n.tr("Weather"),      "jp": "天気", "enable": "weatherEnabled",  "anchor": "weatherAnchor",  "natW": 220, "natH": 390 },
+        { "tab": "notes",    "title": I18n.tr("Notes"),        "jp": "メモ", "enable": "notesEnabled",    "anchor": "notesAnchor",    "natW": 260, "natH": 180 }
     ]
     function widgetOf(tab) { for (var i = 0; i < pg.widgets.length; i++) if (pg.widgets[i].tab === tab) return pg.widgets[i]; return null; }
     readonly property var curWidget: pg.selected === "" ? null : pg.widgetOf(pg.selected)
@@ -401,9 +455,100 @@ Item {
     Component { id: calPrevC; Loader { anchors.fill: parent; source: Qt.resolvedUrl("../CalendarPreview.qml")
         onLoaded: { item.style = Qt.binding(() => pg.draft.calendarStyle || "glass"); item.weeks = Qt.binding(() => pg.draft.calendarWeeks || 6); item.showWeekNumbers = Qt.binding(() => pg.draft.calendarWeekNumbers === true); } } }
     Component { id: musicPrevC; Loader { anchors.fill: parent; source: Qt.resolvedUrl("../MusicPreview.qml")
-        onLoaded: { item.style = Qt.binding(() => pg.draft.musicStyle || "cover"); item.lyrics = Qt.binding(() => pg.draft.musicLyrics === true); } } }
+        onLoaded: { item.style = Qt.binding(() => pg.draft.musicStyle || "cover"); item.lyrics = Qt.binding(() => pg.draft.musicLyrics === true); item.viz = Qt.binding(() => pg.draft.musicViz || "bars"); } } }
+    Component { id: weatherPrevC; Loader { anchors.fill: parent; source: Qt.resolvedUrl("../WeatherPreview.qml")
+        onLoaded: { item.design = Qt.binding(() => pg.draft.weatherDesign || "compact"); } } }
+    Component { id: notesPrevC; Loader { anchors.fill: parent; source: Qt.resolvedUrl("../NotesPreview.qml") } }
     function previewFor(tab) {
-        switch (tab) { case "aio": return aioPrevC; case "stats": return statsPrevC; case "calendar": return calPrevC; case "music": return musicPrevC; default: return clockPrevC; }
+        switch (tab) { case "aio": return aioPrevC; case "stats": return statsPrevC; case "calendar": return calPrevC; case "music": return musicPrevC; case "weather": return weatherPrevC; case "notes": return notesPrevC; default: return clockPrevC; }
+    }
+
+    // ── store-installed desktop widgets ──────────────────────────────────────
+    // Plugins whose home is the wallpaper, discovered exactly as the Add-ons
+    // page does (discover.sh --all, then keep only the desktopWidget host).
+    // They live below the built-in grid, grouped by the set their manifest
+    // names, and toggle live through ryoku-plugins-place -- outside this page's
+    // draft/Save flow entirely.
+    property var storeRows: []
+
+    readonly property string shellDir: Quickshell.env("RYOKU_SHELL_DIR")
+    readonly property string discoverScript: (pg.shellDir && pg.shellDir.length > 0)
+        ? pg.shellDir + "/quickshell/plugins/discover.sh"
+        : (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/quickshell/plugins/discover.sh"
+
+    // group into sections in first-seen set order; plugins that name no set fall
+    // to a final "Plugins" section, so any future set slots in with no change.
+    readonly property var storeSections: {
+        var order = [];
+        var byKey = ({});
+        var loose = [];
+        for (var i = 0; i < pg.storeRows.length; i++) {
+            var r = pg.storeRows[i];
+            var s = r.set || "";
+            if (s === "") { loose.push(r); continue; }
+            if (byKey[s] === undefined) { byKey[s] = []; order.push(s); }
+            byKey[s].push(r);
+        }
+        var out = [];
+        for (var j = 0; j < order.length; j++)
+            out.push({ "name": order[j], "rows": byKey[order[j]] });
+        if (loose.length > 0)
+            out.push({ "name": I18n.tr("Plugins"), "rows": loose });
+        return out;
+    }
+
+    function refreshStore() { storeProc.running = false; storeProc.running = true; }
+    function placePlugin(id, enabled) {
+        if (!id)
+            return;
+        storePlaceProc.command = ["ryoku-plugins-place", id, "enabled", enabled ? "true" : "false"];
+        storePlaceProc.running = true;
+    }
+
+    Process {
+        id: storeProc
+        command: ["bash", pg.discoverScript, "--all"]
+        running: true
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var list = [];
+                try { list = JSON.parse(text || "[]"); } catch (e) { list = []; }
+                var rows = [];
+                for (var i = 0; i < list.length; i++) {
+                    var e = list[i];
+                    var man = e.manifest || ({});
+                    var place = e.placement || ({});
+                    var host = place.host
+                        ? place.host
+                        : ((man.defaults && man.defaults.host) ? man.defaults.host : "framePopout");
+                    if (host !== "desktopWidget")
+                        continue;
+                    rows.push({
+                        "id": e.id,
+                        "title": man.name || e.id,
+                        "set": man.set || "",
+                        "enabled": place.enabled === true,
+                        "icon": (man.defaults && man.defaults.icon) ? man.defaults.icon : "",
+                        "dir": e.dir || "",
+                        "settings": (place.settings && typeof place.settings === "object") ? place.settings : ({})
+                    });
+                }
+                pg.storeRows = rows;
+            }
+        }
+    }
+    // a placement toggle re-reads the truth, so the ON/OFF line and the switch
+    // settle on what actually landed on disk.
+    Process { id: storePlaceProc; onExited: pg.refreshStore() }
+
+    // installing a set from the store writes plugins.json; that write lights up
+    // this shelf without reopening the Hub.
+    FileView {
+        id: placementWatch
+        path: (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/ryoku/plugins.json"
+        watchChanges: true
+        printErrors: false
+        onFileChanged: pg.refreshStore()
     }
 
     Item {
@@ -416,7 +561,7 @@ Item {
         Flickable {
             id: gridFlick
             anchors.fill: parent
-            contentHeight: grid.height + Tokens.s5
+            contentHeight: (pg.storeSections.length > 0 ? storeStack.y + storeStack.height : grid.height) + Tokens.s5
             clip: true
             interactive: pg.selected === ""
             opacity: pg.selected === "" ? 1 : 0
@@ -424,6 +569,7 @@ Item {
             enabled: pg.selected === ""
             Behavior on opacity { NumberAnimation { duration: Tokens.swap; easing.type: Tokens.ease } }
             ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+            WheelScroll { }
 
             Flow {
                 id: grid
@@ -455,15 +601,25 @@ Item {
                             id: pbody
                             anchors { left: parent.left; right: parent.right; top: parent.top }
                             anchors.margins: Tokens.s3
-                            height: wcard.height - footer.height - Tokens.s3 * 2
+                            height: wcard.height - footer.height - Tokens.s3 * 3
                             clip: true
                             opacity: wcard.on ? 1 : 0.45
                             Behavior on opacity { NumberAnimation { duration: Tokens.snap } }
                             Item {
-                                width: wcard.modelData.natW; height: wcard.modelData.natH
+                                id: pwrap
+                                width: wcard.modelData.natW
+                                // the preview's own natural height when it reports one,
+                                // so a face with a date line is scaled to fit whole
+                                // rather than clipped at the card's edge.
+                                readonly property real natH: (pv.item && pv.item.implicitHeight > 0)
+                                    ? pv.item.implicitHeight : wcard.modelData.natH
+                                height: natH
                                 anchors.centerIn: parent
-                                scale: Math.min(pbody.width / wcard.modelData.natW, pbody.height / wcard.modelData.natH, 1.25)
-                                Loader { anchors.fill: parent; sourceComponent: pg.previewFor(wcard.modelData.tab) }
+                                // never upscale past natural size: a preview blown
+                                // up to fill clips flush against the footer and its
+                                // glyphs read as overlapping the label row.
+                                scale: Math.min(pbody.width / pwrap.width, pbody.height / pwrap.natH, 1.0)
+                                Loader { id: pv; anchors.fill: parent; sourceComponent: pg.previewFor(wcard.modelData.tab) }
                             }
                         }
 
@@ -486,6 +642,70 @@ Item {
                                 anchors { right: parent.right; verticalCenter: parent.verticalCenter }
                                 on: wcard.on
                                 onToggled: (v) => pg.edit(wcard.modelData.enable, v)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── store-installed desktop widgets, grouped by set ───────────────
+            // A second shelf under the built-in grid: a divider, then a section
+            // per set. Nothing draws when none are installed, so a stock desktop
+            // reads exactly as before. These toggle live through the placement
+            // backend and stay clear of the Save bar's dirty state.
+            Column {
+                id: storeStack
+                anchors.top: grid.bottom
+                anchors.topMargin: Tokens.s5
+                width: gridFlick.width
+                spacing: Tokens.s5
+                visible: pg.storeSections.length > 0
+
+                Rectangle { width: parent.width; height: 1; color: Tokens.line }
+
+                Repeater {
+                    model: pg.storeSections
+                    delegate: Column {
+                        id: setSection
+                        required property var modelData
+                        width: storeStack.width
+                        spacing: Tokens.s4
+
+                        Text {
+                            text: setSection.modelData.name
+                            color: Tokens.inkMuted; font.family: Tokens.ui
+                            font.pixelSize: Tokens.fMicro; font.weight: Font.Medium
+                            font.letterSpacing: Tokens.trackMark
+                            font.capitalization: Font.AllUppercase
+                        }
+
+                        Flow {
+                            width: setSection.width
+                            spacing: Tokens.s4
+                            Repeater {
+                                model: setSection.modelData.rows
+                                // resolved by URL, not a bare sibling type: the
+                                // Hub's pages/ dir has no qmldir, so a type
+                                // declared beside this page does not register
+                                // after an upgrade (same form ProfilePage uses
+                                // for HeroEditor/ProfileToolbar). (#251)
+                                delegate: Loader {
+                                    id: widgetCardLoader
+                                    required property var modelData
+                                    width: Math.max(280, Math.min(360, (setSection.width - Tokens.s4 * 2) / 3))
+                                    height: 236
+                                    source: Qt.resolvedUrl("StoreWidgetCard.qml")
+                                    onLoaded: {
+                                        if (!item)
+                                            return
+                                        item.title = modelData.title
+                                        item.on = modelData.enabled === true
+                                        item.icon = modelData.icon
+                                        item.dir = modelData.dir
+                                        item.settings = modelData.settings
+                                        item.toggled.connect(function (v) { pg.placePlugin(modelData.id, v) })
+                                    }
+                                }
                             }
                         }
                     }
@@ -540,6 +760,8 @@ Item {
                     item.defaults = Qt.binding(() => pg.sheetDefaults);
                     item.tab = Qt.binding(() => pg.selected);
                     item.query = Qt.binding(() => pg.query);
+                    // the rail's Advanced toggle reveals the per-widget desktop lock
+                    item.advanced = Qt.binding(() => !!(pg.hub && pg.hub.advanced));
                     item.edited.connect(pg.onSheetEdited);
                     item.pickRequested.connect(pg.onSheetPick);
                     item.appPickRequested.connect(pg.onSheetAppPick);
@@ -575,14 +797,6 @@ Item {
             height: 1; color: Tokens.line
         }
 
-        // marginalia in the bar's dead centre, between the status and the verbs.
-        Marginalia {
-            anchors.horizontalCenter: parent.horizontalCenter
-            anchors.verticalCenter: parent.verticalCenter
-            kana: "部品"
-            glyph: "wave"; glyph2: "column"
-        }
-
         Row {
             anchors.left: parent.left
             anchors.leftMargin: Tokens.s6
@@ -609,7 +823,9 @@ Item {
             Text {
                 anchors.verticalCenter: parent.verticalCenter
                 text: pg.dirty
-                    ? (pg.dirtyCount + (pg.dirtyCount === 1 ? I18n.tr(" CHANGE") : I18n.tr(" CHANGES")) + I18n.tr(" · PREVIEWING · NOT SAVED"))
+                    ? (pg.dirtyCount === 1
+                       ? I18n.tr("%1 CHANGE · PREVIEWING · NOT SAVED").arg(pg.dirtyCount)
+                       : I18n.tr("%1 CHANGES · PREVIEWING · NOT SAVED").arg(pg.dirtyCount))
                     : I18n.tr("SAVED · LIVE ON YOUR DESKTOP")
                 color: pg.dirty ? Tokens.ink : Tokens.inkMuted
                 font.family: Tokens.ui; font.pixelSize: Tokens.fMicro
@@ -668,6 +884,9 @@ Item {
             title: pg.pickRow ? I18n.tr(pg.pickRow.label) : ""
             options: pg.pickRow ? (pg.pickRow.opts || []) : []
             current: pg.pickRow ? String(pg.draft[pg.pickRow.key]) : ""
+            // the only pick rows on this page are the anchor pickers; give the
+            // new "auto" value a human label, the rest keep their raw key.
+            labels: ({ "auto": I18n.tr("Auto (calm spot)") })
             onChose: (key) => {
                 if (pg.pickRow)
                     pg.edit(pg.pickRow.key, key);

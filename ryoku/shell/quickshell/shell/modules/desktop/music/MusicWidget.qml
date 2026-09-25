@@ -7,6 +7,7 @@ import ".."
 import "../Singletons"
 import "../../../components"
 import "../../../utils/artcolor.js" as ArtColor
+import Ryoku.Ui.Singletons
 
 // The wallpaper's now-playing sheet: the sleeve leads, this song's lyrics run
 // beside it under the line being sung, and the track, its clock, a wavy seek rail
@@ -25,7 +26,11 @@ Item {
     property bool active: true
     property string musicApp: ""            // corner-button launch command (from Config)
     property real s: 1
+    property string viz: "bars"             // bars | wave (the no-lyrics visualiser look)
     property real underL: Scheme.wallLstar
+    // WidgetSlot pins a hex here to paint this widget's ink; "" keeps the palette ink.
+    // Only the theme inks follow it; the per-song accent + plate stay album data.
+    property string inkColorA: ""
     property Item wallpaperSource: null
     property rect wallpaperRect: Qt.rect(0, 0, 0, 0)
     property string shape: "wide"           // wide | tall (9:16 canvas)
@@ -73,8 +78,8 @@ Item {
         rescaleSize: 48
     }
     readonly property color accent: ArtColor.accentOf(quant.colors, Scheme.accent)
-    readonly property color ink: Theme.ink
-    readonly property color dim: Theme.inkDim
+    readonly property color ink: root.inkColorA !== "" ? root.inkColorA : Theme.ink
+    readonly property color dim: root.inkColorA !== "" ? Qt.rgba(Qt.color(root.inkColorA).r, Qt.color(root.inkColorA).g, Qt.color(root.inkColorA).b, 0.7) : Theme.inkDim
     readonly property color plate: ArtColor.plateOf(root.accent, Theme.surface)
     readonly property bool hasLyrics: Music.synced || Music.unsynced
     // Hysteresis for the side area so lyrics and the visualizer never strobe: a
@@ -137,7 +142,7 @@ Item {
         }
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
-            text: qsTr("Nothing playing")
+            text: I18n.tr("Nothing playing")
             color: root.dim
             font.family: Theme.font
             font.pixelSize: 13 * root.s
@@ -204,6 +209,7 @@ Item {
             s: root.s
             accent: root.accent
             live: Media.playing
+            look: root.viz
         }
 
 
@@ -283,7 +289,7 @@ Item {
                 anchors.rightMargin: 14 * root.s
                 anchors.verticalCenter: parent.verticalCenter
                 visible: !root.seekable
-                text: Media.radio ? qsTr("Live") : ""
+                text: Media.radio ? I18n.tr("Live") : ""
                 color: root.dim
                 elide: Text.ElideRight
                 font.family: Theme.mono
@@ -321,6 +327,7 @@ Item {
         id: tallComp
         MusicTall {
             s: root.s
+            inkColorA: root.inkColorA
             accent: root.accent
             plate: root.plate
             videoSource: root.videoSource
@@ -364,7 +371,7 @@ Item {
             id: tapOpen
             onTapped: {
                 const cmd = (root.musicApp && root.musicApp.length > 0) ? root.musicApp : "ryotunes";
-                Quickshell.execDetached(["ryoku-music-toggle", cmd]);
+                Quickshell.execDetached(["sh", "-c", cmd]);
             }
         }
     }

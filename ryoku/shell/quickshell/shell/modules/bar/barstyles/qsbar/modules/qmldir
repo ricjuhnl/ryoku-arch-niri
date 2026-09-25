@@ -12,12 +12,12 @@ ConnectedBarInset ConnectedBarInset.qml
 ConnectedPanelSurface ConnectedPanelSurface.qml
 CpuTemperatureWidget CpuTemperatureWidget.qml
 CpuWidget CpuWidget.qml
-DockRow DockRow.qml
 GpuWidget GpuWidget.qml
 IconText IconText.qml
 IdleInhibitorWidget IdleInhibitorWidget.qml
 IdleWidget IdleWidget.qml
 LauncherWidget LauncherWidget.qml
+LayoutWidget LayoutWidget.qml
 MediaBrowserWidget MediaBrowserWidget.qml
 MemoryWidget MemoryWidget.qml
 MprisArtwork MprisArtwork.qml
@@ -34,6 +34,7 @@ PowerProfileWidget PowerProfileWidget.qml
 ReactorLayer ReactorLayer.qml
 ScreenRecordWidget ScreenRecordWidget.qml
 StorageWidget StorageWidget.qml
+StreamShader StreamShader.qml
 ThemeDisplayWidget ThemeDisplayWidget.qml
 TooltipMixin TooltipMixin.qml
 TrayWidget TrayWidget.qml

@@ -202,11 +202,20 @@ Item {
     // ── head: eyebrow, Fraunces title, blurb (matches every page) ───────────
     Column {
         id: head
-        anchors { left: parent.left; right: parent.right; top: parent.top }
-        anchors.leftMargin: Tokens.s6; anchors.rightMargin: Tokens.s6; anchors.topMargin: Tokens.s6
-        spacing: Tokens.s2
+        anchors.top: parent.top
+        anchors.topMargin: Tokens.s6
+        // the head sits on the body's grid: left-inset and body-wide, so the
+        // title starts over the first card column instead of floating centred
+        x: Tokens.s6
+        width: Math.max(320, pg.width - Tokens.s6 * 2 - Tokens.s3)
+        // the register row sits off the title: a rule over a 32px
+        // title needs more than the gap between two lines of body text
+        spacing: Tokens.s3
 
         Row {
+            // the register row holds a fixed box, so the rule and the seal keep
+            // their distance from the title on every page
+            height: Tokens.s5
             spacing: Tokens.s2
             Rectangle {
                 width: 16; height: 1; color: Tokens.ink
@@ -242,20 +251,12 @@ Item {
         }
         Text {
             width: Math.min(parent.width, 720)
-            text: I18n.tr("Manage installed shell plugins and extras bundles. Changes apply live; RyoStore owns browsing and installation.")
+            text: I18n.tr("Installed plugins and bundles. RyoStore installs new ones.")
             color: Tokens.inkMuted; font.family: Tokens.ui
             font.pixelSize: Tokens.fBody; wrapMode: Text.WordWrap
         }
     }
 
-    // marginalia dressing the head's empty right margin (eyebrow line). Ink only.
-    Marginalia {
-        anchors { right: parent.right; top: head.top }
-        anchors.rightMargin: Tokens.s6; anchors.topMargin: Tokens.s1
-        kana: "拡張"
-        index: "07"; label: I18n.tr("ADD-ONS")
-        glyph: "asanoha"; glyph2: "meander"
-    }
     Tabs {
         id: tabs
         anchors.left: parent.left
@@ -332,7 +333,7 @@ Item {
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
                         // an entry count is file-truth chrome, so mono.
-                        text: pg.plugins.length + (pg.plugins.length === 1 ? I18n.tr(" PLUGIN") : I18n.tr(" PLUGINS"))
+                        text: (pg.plugins.length === 1 ? I18n.tr("%1 PLUGIN") : I18n.tr("%1 PLUGINS")).arg(pg.plugins.length)
                         color: Tokens.inkFaint; font.family: Tokens.mono; font.pixelSize: Tokens.fTiny
                     }
                     // Re-scan installed plugins after external RyoStore changes.
@@ -355,18 +356,21 @@ Item {
                 id: flick
                 anchors {
                     left: parent.left; right: parent.right
-                    top: sect.bottom; bottom: instDecor.visible ? instDecor.top : parent.bottom
-                    topMargin: Tokens.s4; bottomMargin: instDecor.visible ? Tokens.s4 : 0
+                    top: sect.bottom; bottom: parent.bottom
+                    topMargin: Tokens.s4; bottomMargin: Tokens.s4
                 }
                 contentWidth: width
                 contentHeight: Math.max(col.height, height)
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+                WheelScroll { }
 
-                Column {
-                    id: col
-                    width: flick.width - Tokens.s3   // reserve a lane for the scroll rail
+                CardColumns {
+
+                id: col
+            // a body of cards fills the measure and splits into balanced columns
+            width: flick.width - Tokens.s3
                     spacing: Tokens.s2
 
                     Repeater {
@@ -385,7 +389,7 @@ Item {
                                 ? card.man.metadata.settings.length : 0
                             readonly property string upd: pg.updateFor(card.modelData)
 
-                            width: col.width
+                            width: col.colWidth
                             height: 64
                             radius: Tokens.radius
                             color: ch.hovered ? Tokens.tint5 : "transparent"
@@ -414,7 +418,7 @@ Item {
                                 Text {
                                     width: parent.width
                                     text: pg.hostLabel(card.host)
-                                        + (card.settingsCount > 0 ? "  ·  " + card.settingsCount + (card.settingsCount === 1 ? " setting" : " settings") : "")
+                                        + (card.settingsCount > 0 ? "  ·  " + (card.settingsCount === 1 ? I18n.tr("%1 setting") : I18n.tr("%1 settings")).arg(card.settingsCount) : "")
                                     color: Tokens.inkMuted; font.family: Tokens.ui
                                     font.pixelSize: Tokens.fMicro
                                     elide: Text.ElideRight
@@ -433,7 +437,7 @@ Item {
                                 Text {
                                     anchors.verticalCenter: parent.verticalCenter
                                     visible: card.upd !== ""
-                                    text: I18n.tr("UPDATE ") + card.upd
+                                    text: I18n.tr("UPDATE %1").arg(card.upd)
                                     color: Tokens.ink; font.family: Tokens.mono; font.pixelSize: Tokens.fTiny
                                 }
 
@@ -482,20 +486,6 @@ Item {
                 color: Tokens.inkMuted; font.family: Tokens.ui; font.pixelSize: Tokens.fSmall
             }
 
-            // fills the dead grid slot below a short plugin list, per DESIGN.md
-            // section 12: a poster gives the section its face. Ink-only, holds no
-            // control; hidden while searching so results own the full column.
-            Decor {
-                id: instDecor
-                anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
-                height: Math.min(300, parent.height - Tokens.cellH * 2 - Tokens.s5)
-                visible: pg.loaded && pg.shown.length > 0 && pg.query.trim() === "" && height > 140
-                title: "拡張"; sub: "アドオン"
-                tate: "力を継ぎ足す"
-                caption: I18n.tr("Plugins extend the shell: live surfaces installed through RyoStore.")
-                readout: ["SOURCE|plugins.json", "APPLY|live", "SITS|frame · desktop · bar", "SCOPE|per-plugin"]
-                code: "ADDON-04"; seal: "拡"; boxId: "addons.installed"; seed: 5; ditherFreq: 1.0
-            }
         }
     }
 
@@ -510,7 +500,7 @@ Item {
                 Text {
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    text: pg.bundles.length + (pg.bundles.length === 1 ? I18n.tr(" BUNDLE") : I18n.tr(" BUNDLES"))
+                    text: (pg.bundles.length === 1 ? I18n.tr("%1 BUNDLE") : I18n.tr("%1 BUNDLES")).arg(pg.bundles.length)
                     color: Tokens.inkFaint
                     font.family: Tokens.mono
                     font.pixelSize: Tokens.fTiny
@@ -531,6 +521,7 @@ Item {
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+                WheelScroll { }
 
                 Column {
                     id: bundleList
@@ -570,7 +561,7 @@ Item {
                                         }
                                         Text {
                                             width: parent.width
-                                            text: Number(bundleCard.modelData.installedCount || 0) + " / " + Number(bundleCard.modelData.totalCount || bundleCard.parts.length) + I18n.tr(" INSTALLED")
+                                            text: I18n.tr("%1 / %2 INSTALLED").arg(Number(bundleCard.modelData.installedCount || 0)).arg(Number(bundleCard.modelData.totalCount || bundleCard.parts.length))
                                             color: Tokens.inkMuted
                                             font.family: Tokens.mono
                                             font.pixelSize: Tokens.fTiny
@@ -682,7 +673,7 @@ Item {
                     Btn {
                         anchors.verticalCenter: parent.verticalCenter
                         visible: detail.upd !== ""
-                        text: pg.busyId === detail.sel.id ? I18n.tr("UPDATING") : (I18n.tr("UPDATE ") + detail.upd)
+                        text: pg.busyId === detail.sel.id ? I18n.tr("UPDATING") : I18n.tr("UPDATE %1").arg(detail.upd)
                         armed: pg.busyId === ""
                         onAct: pg.install(detail.sel.id)
                     }
@@ -726,11 +717,46 @@ Item {
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+                WheelScroll { }
 
                 Column {
                     id: dcol
                     width: dflick.width - Tokens.s3
                     spacing: Tokens.s5
+
+                    // A plugin Ryoku did not write says so first: the same
+                    // warning the Store and QS Bar Settings print.
+                    Rectangle {
+                        width: parent.width
+                        visible: detail.man.official !== true
+                        height: visible ? communityRow.implicitHeight + Tokens.s4 * 2 : 0
+                        radius: Tokens.radius
+                        color: "transparent"
+                        border.width: Tokens.border
+                        border.color: Tokens.lineStrong
+                        Row {
+                            id: communityRow
+                            anchors {
+                                left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter
+                                leftMargin: Tokens.s4; rightMargin: Tokens.s4
+                            }
+                            spacing: Tokens.s3
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "warning"
+                                color: Tokens.inkDim
+                                font.family: "Material Symbols Rounded"
+                                font.pixelSize: Tokens.fRow
+                            }
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: parent.width - Tokens.fRow - parent.spacing
+                                text: I18n.tr("Community plugin. Ryoku does not review or maintain it: it runs inside your shell with your permissions, so inspect its code before you trust it.")
+                                color: Tokens.inkDim; font.family: Tokens.ui; font.pixelSize: Tokens.fSmall
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                    }
 
                     // ── Placement: enable, host, and where a popout sits ──
                     Column {
@@ -914,7 +940,7 @@ Item {
                                     Text {
                                         anchors.centerIn: parent
                                         visible: !placer.centered
-                                        text: "centre"
+                                        text: I18n.tr("centre")
                                         color: Tokens.inkFaint; font.family: Tokens.mono
                                         font.pixelSize: Tokens.fTiny; font.letterSpacing: 1.5
                                     }
@@ -935,7 +961,7 @@ Item {
 
                                     Text {
                                         anchors.centerIn: parent
-                                        text: "popout"
+                                        text: I18n.tr("popout")
                                         color: Tokens.ink; font.family: Tokens.mono; font.pixelSize: Tokens.fTiny
                                     }
 
@@ -1374,8 +1400,8 @@ Item {
 
                 Text {
                     width: parent.width
-                    text: I18n.tr("Remove ") + (pg.sel && pg.sel.manifest && pg.sel.manifest.name
-                        ? pg.sel.manifest.name : (pg.sel ? pg.sel.id : "add-on")) + "?"
+                    text: I18n.tr("Remove %1?").arg(pg.sel && pg.sel.manifest && pg.sel.manifest.name
+                        ? pg.sel.manifest.name : (pg.sel ? pg.sel.id : I18n.tr("add-on")))
                     color: Tokens.inkOnBone; font.family: Tokens.ui
                     font.pixelSize: Tokens.fValue; font.weight: Font.Medium
                     wrapMode: Text.WordWrap

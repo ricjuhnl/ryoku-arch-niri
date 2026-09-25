@@ -3,6 +3,7 @@ import QtQuick.Window
 import Qt5Compat.GraphicalEffects
 import Qt.labs.folderlistmodel
 import SddmComponents 2.0
+import "i18n"
 
 Rectangle {
     // Wayland Cursor Fix
@@ -19,6 +20,55 @@ Rectangle {
 
     property bool isQuickshell: typeof sddm === "undefined" || sddm.hostName === undefined
 
+    // --- Software cursor for the SDDM login screen --------------------------
+    // weston (the greeter's compositor) implements no wp_cursor_shape, and its
+    // wl_pointer.set_cursor fallback never renders on this hybrid GPU, so the
+    // login pointer is invisible (issue #191). Draw one in the scene instead: a
+    // passive HoverHandler tracks the pointer without stealing clicks or hover,
+    // and an arrow follows it. Only under the SDDM greeter -- the in-session lock
+    // runs on the shell's own compositor, which draws a real cursor, so off there.
+    HoverHandler {
+        id: swPointer
+        enabled: !root.isQuickshell
+    }
+    Canvas {
+        id: swCursor
+        width: 26 * root.s
+        height: 26 * root.s
+        z: 2000000
+        visible: !root.isQuickshell && swPointer.hovered
+        x: swPointer.point.position.x
+        y: swPointer.point.position.y
+        antialiasing: true
+        onPaint: {
+            var ctx = getContext("2d");
+            ctx.reset();
+            ctx.scale(root.s, root.s);
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(0, 16);
+            ctx.lineTo(4, 12.5);
+            ctx.lineTo(6.5, 19);
+            ctx.lineTo(9, 18);
+            ctx.lineTo(6.5, 11.5);
+            ctx.lineTo(11, 11.5);
+            ctx.closePath();
+            ctx.fillStyle = "#ffffff";
+            ctx.fill();
+            ctx.lineWidth = 1.2;
+            ctx.strokeStyle = "#000000";
+            ctx.stroke();
+        }
+    }
+
+    // The 60fps clock timer below only feeds the smooth second-hand, so keep it
+    // awake only while this surface is on screen. Under the SDDM greeter that is
+    // when the window is focused; a backgrounded or orphaned greeter then stops
+    // waking the CPU ~60x/s for a clock nobody can see. The in-session lock shim
+    // (which alone defines sddm.fingerprintHint) lives only while shown, so it
+    // always animates.
+    readonly property bool clockAwake: ((typeof sddm !== "undefined") && sddm.fingerprintHint === true) || Window.active
+
     // ── fingerprint sensor hint ─────────────────────────────────────────────
     // Driven by the lock shim's carry-over props (fingerprintHint,
     // fingerprintReady, fingerprintState). These are undefined under a real
@@ -27,10 +77,10 @@ Rectangle {
     readonly property bool fpVisible: (typeof sddm !== "undefined") && sddm.fingerprintHint === true && sddm.fingerprintReady === true
     readonly property var fpState: typeof sddm !== "undefined" ? (sddm.fingerprintState || "idle") : "idle"
     readonly property string fpHintText: {
-        if (root.fpState === "success") return "ACCESS GRANTED ✦"
-        if (root.fpState === "fail")    return "SCAN DENIED ✦ TYPE YOUR KEY"
-        if (root.fpState === "scanning") return "SENSOR ACTIVE ✦ TOUCH OR TYPE"
-        return "TOUCH SENSOR ✦ TO UNLOCK"
+        if (root.fpState === "success") return I18n.tr("ACCESS GRANTED ✦")
+        if (root.fpState === "fail")    return I18n.tr("SCAN DENIED ✦ TYPE YOUR KEY")
+        if (root.fpState === "scanning") return I18n.tr("SENSOR ACTIVE ✦ TOUCH OR TYPE")
+        return I18n.tr("TOUCH SENSOR ✦ TO UNLOCK")
     }
 
     // Theme Config
@@ -56,6 +106,10 @@ Rectangle {
     property bool userMenuOpen: false
     property bool isWindup: false
     property real uiOpacity: 0
+    property string authInfo: ""
+    readonly property bool fidoInfo: authInfo.toLowerCase().indexOf("fido") >= 0 || authInfo.toLowerCase().indexOf("authenticator") >= 0 || authInfo.toLowerCase().indexOf("pin") >= 0
+    readonly property bool touchInfo: authInfo.toLowerCase().indexOf("touch") >= 0
+    readonly property string inputHint: authInfo !== "" ? authInfo.toUpperCase() : I18n.tr("TYPE PASSWORD OR FIDO PIN")
     readonly property real marginR: 80 * s
 
     // Time Logic
@@ -66,7 +120,7 @@ Rectangle {
     readonly property real localTimeMS: (curH * 3600000) + (curM * 60000) + (curS * 1000) + curMS
 
     Timer {
-        interval: 16; running: true; repeat: true
+        interval: 16; running: root.clockAwake; repeat: true
         onTriggered: {
             var d = new Date()
             root.curH = d.getHours(); root.curM = d.getMinutes(); root.curS = d.getSeconds(); root.curMS = d.getMilliseconds()
@@ -132,7 +186,18 @@ Rectangle {
     // Input Focus
     Timer { interval: 300; running: true; onTriggered: passInput.forceActiveFocus() }
 
-    Component.onCompleted: { fadeIn.start(); keyboard.numLock = true }
+    Component.onCompleted: {
+        keyboard.numLock = true
+        if (typeof sessionModel !== "undefined")
+            root.sessionIndex = preferredSessionIndex()
+        // in-session lock paints only once secure; the greeter is up at load
+        if (root.enableWindup) {
+            if (!(typeof sddm !== "undefined" && sddm.fingerprintHint === true))
+                playLockReveal()
+        } else {
+            fadeIn.start()
+        }
+    }
     NumberAnimation { id: fadeIn; target: root; property: "uiOpacity"; to: 1; duration: 350; easing.type: Easing.OutCubic }
 
     // Main Layout
@@ -243,11 +308,11 @@ Rectangle {
         id: hudContainer; anchors.fill: parent; opacity: root.uiOpacity * (root.boomOpacity > 0 ? 0 : 1)
         Row {
             anchors.right: parent.right; anchors.rightMargin: root.marginR; anchors.top: parent.top; anchors.topMargin: 50 * s; spacing: 25 * s
-            CwAction { visible: !root.isQuickshell; label: (sessionHelper.currentItem ? sessionHelper.currentItem.sName : "Session"); onClicked: { if (typeof sessionModel !== "undefined") root.sessionIndex = (root.sessionIndex + 1) % sessionModel.rowCount() } }
+            CwAction { visible: !root.isQuickshell; label: (sessionHelper.currentItem ? sessionHelper.currentItem.sName : I18n.tr("Session")); onClicked: { if (typeof sessionModel !== "undefined") root.sessionIndex = (root.sessionIndex + 1) % sessionModel.rowCount() } }
             Rectangle { visible: !root.isQuickshell; width: 1 * s; height: 10 * s; color: root.pillBorder; anchors.verticalCenter: parent.verticalCenter }
-            CwAction { label: "Reboot"; onClicked: { if (typeof sddm !== "undefined") sddm.reboot() } }
+            CwAction { label: I18n.tr("Reboot"); onClicked: { if (typeof sddm !== "undefined") sddm.reboot() } }
             Rectangle { width: 1 * s; height: 10 * s; color: root.pillBorder; anchors.verticalCenter: parent.verticalCenter }
-            CwAction { label: "Shutdown"; onClicked: { if (typeof sddm !== "undefined") sddm.powerOff() } }
+            CwAction { label: I18n.tr("Shutdown"); onClicked: { if (typeof sddm !== "undefined") sddm.powerOff() } }
         }
         Column {
             id: loginPanel; anchors.right: parent.right; anchors.rightMargin: root.marginR; anchors.bottom: parent.bottom; anchors.bottomMargin: 80 * s; width: 350 * s; spacing: 8 * s
@@ -274,7 +339,7 @@ Rectangle {
                 }
                 Text {
                     id: userNameDisp; anchors.right: parent.right; anchors.rightMargin: (uMa.containsMouse || root.userMenuOpen) ? 25 * s : 0
-                    text: ((userHelper.currentItem && userHelper.currentItem.uName) ? userHelper.currentItem.uName : ((typeof userModel !== "undefined" && userModel.lastUser) ? capitalizeFirst(userModel.lastUser) : "USER")).toUpperCase()
+                    text: ((userHelper.currentItem && userHelper.currentItem.uName) ? userHelper.currentItem.uName : ((typeof userModel !== "undefined" && userModel.lastUser) ? capitalizeFirst(userModel.lastUser) : I18n.tr("USER"))).toUpperCase()
                     font.family: outfitFont.name; font.pixelSize: 18 * s; font.weight: Font.Bold; font.letterSpacing: 8 * s; color: (uMa.containsMouse || root.userMenuOpen) ? root.mainText : root.dimText; Behavior on color { ColorAnimation { duration: 200 } } Behavior on anchors.rightMargin { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
                 }
                 Text { text: "✦"; anchors.left: userNameDisp.right; anchors.leftMargin: 8 * s; anchors.verticalCenter: userNameDisp.verticalCenter; color: root.mainText; opacity: (uMa.containsMouse || root.userMenuOpen) ? 1.0 : 0; font.pixelSize: 12 * s; Behavior on opacity { NumberAnimation { duration: 200 } } }
@@ -317,7 +382,7 @@ Rectangle {
                 TextInput {
                     id: passInput; anchors.fill: parent; echoMode: TextInput.Password; passwordCharacter: "✦"; color: root.dimText; font.family: outfitFont.name; font.pixelSize: 14 * s; font.letterSpacing: 10 * s; horizontalAlignment: TextInput.AlignRight; verticalAlignment: TextInput.AlignVCenter; focus: true; property bool wasClicked: false; cursorVisible: false; cursorDelegate: Item { width: 0; height: 0 }
                     Keys.onReturnPressed: startLoginSequence()
-                    Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: "WAITING FOR KEY"; font.family: outfitFont.name; font.pixelSize: 10 * s; font.letterSpacing: 4 * s; color: root.inputWaitColor; opacity: passInput.text.length === 0 ? 0.4 : 0; Behavior on opacity { NumberAnimation { duration: 400; easing.type: Easing.InOutSine } } }
+                    Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: root.inputHint; font.family: outfitFont.name; font.pixelSize: 10 * s; font.letterSpacing: 4 * s; color: root.fidoInfo ? root.mainText : root.inputWaitColor; opacity: passInput.text.length === 0 ? 0.55 : 0; Behavior on opacity { NumberAnimation { duration: 400; easing.type: Easing.InOutSine } } }
                     Rectangle {
                         id: needleCursor; width: 1.5 * s; height: 12 * s; color: root.mainText; anchors.verticalCenter: parent.verticalCenter; x: passInput.cursorRectangle.x; visible: passInput.focus && (passInput.text.length > 0 || passInput.wasClicked)
                         SequentialAnimation { loops: Animation.Infinite; running: needleCursor.visible; NumberAnimation { target: needleCursor; property: "opacity"; from: 1; to: 0.1; duration: 450 } NumberAnimation { target: needleCursor; property: "opacity"; from: 0.1; to: 1; duration: 450 } }
@@ -328,9 +393,9 @@ Rectangle {
             Item {
                 width: parent.width; height: 40 * s
                 Text {
-                    id: loginBtn; anchors.right: parent.right; anchors.rightMargin: btnMa.containsMouse ? 25 * s : 0; text: "ENTER KEY"; font.family: outfitFont.name; font.pixelSize: 11 * s; font.letterSpacing: 4 * s; font.weight: Font.Bold; color: passInput.text.length > 0 ? (btnMa.containsMouse ? root.mainText : root.dimText) : "transparent"; opacity: passInput.text.length > 0 ? 1.0 : 0; Behavior on anchors.rightMargin { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
+                    id: loginBtn; anchors.right: parent.right; anchors.rightMargin: btnMa.containsMouse ? 25 * s : 0; text: passInput.text.length > 0 ? I18n.tr("UNLOCK") : (root.touchInfo ? I18n.tr("TOUCH KEY") : I18n.tr("TRY TOUCH ONLY")); font.family: outfitFont.name; font.pixelSize: 11 * s; font.letterSpacing: 4 * s; font.weight: Font.Bold; color: btnMa.containsMouse ? root.mainText : root.dimText; opacity: 1.0; Behavior on anchors.rightMargin { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
                 }
-                Text { text: "✦"; anchors.left: loginBtn.right; anchors.leftMargin: 8 * s; anchors.verticalCenter: loginBtn.verticalCenter; color: root.mainText; opacity: (btnMa.containsMouse && passInput.text.length > 0) ? 1.0 : 0; font.pixelSize: 10 * s; Behavior on opacity { NumberAnimation { duration: 200 } } }
+                Text { text: "✦"; anchors.left: loginBtn.right; anchors.leftMargin: 8 * s; anchors.verticalCenter: loginBtn.verticalCenter; color: root.mainText; opacity: btnMa.containsMouse ? 1.0 : 0; font.pixelSize: 10 * s; Behavior on opacity { NumberAnimation { duration: 200 } } }
                 MouseArea { id: btnMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { startLoginSequence() } }
             }
             Text { id: errText; width: parent.width; height: 15 * s; verticalAlignment: Text.AlignBottom; horizontalAlignment: Text.AlignRight; text: ""; color: "#ff4444"; font.family: outfitFont.name; font.pixelSize: 10 * s; font.letterSpacing: 2 * s }
@@ -339,7 +404,13 @@ Rectangle {
 
     Timer { id: boomTriggerTimer; interval: 1450; onTriggered: { boomSequence.start() } }
     function startLoginSequence() {
-        if (passInput.text.length === 0 || isWindup) return
+        if (isWindup) return
+        // PAM never answers an empty key; the reveal blast would strand white.
+        if (passInput.text.length === 0) {
+            errText.text = ""
+            passInput.forceActiveFocus()
+            return
+        }
         if (root.enableWindup) {
             isWindup = true
             windupAnim.start()
@@ -353,12 +424,28 @@ Rectangle {
     // second PAM auth if the fingerprint wins mid-windup (after
     // boomTriggerTimer at 1450ms). boomSequence.stop() kills the animation.
     property bool _unlocked: false
-    function doLogin() { if (_unlocked) return; _unlocked = true; var uname = (userHelper.currentItem && userHelper.currentItem.uLogin) ? userHelper.currentItem.uLogin : (typeof userModel !== "undefined" ? userModel.lastUser : "user"); if (typeof sddm !== "undefined") sddm.login(uname, passInput.text, root.sessionIndex) }
+    function doLogin() { if (_unlocked) return; _unlocked = true; root.authInfo = ""; var uname = (userHelper.currentItem && userHelper.currentItem.uLogin) ? userHelper.currentItem.uLogin : (typeof userModel !== "undefined" ? userModel.lastUser : "user"); if (typeof sddm !== "undefined") sddm.login(uname, passInput.text, root.sessionIndex); authWatchdog.restart() }
+    // The flash stays up until auth answers; the watchdog lowers it if it never does.
+    function clearUnlockFlash() {
+        _unlocked = false; isWindup = false
+        windupAnim.stop(); boomTriggerTimer.stop(); boomSequence.stop()
+        root.windupOffset = 0; root.boomScale = 1.0; root.boomOpacity = 0.0; root.sparkIntensity = 0
+    }
+    Timer {
+        id: authWatchdog
+        interval: 8000
+        onTriggered: { clearUnlockFlash(); root.authInfo = ""; errText.text = ""; passInput.text = ""; passInput.forceActiveFocus() }
+    }
     function capitalizeFirst(str) { if (!str) return ""; return str.charAt(0).toUpperCase() + str.slice(1) }
     // ── login event handlers ────────────────────────────────────────────────
     Connections {
         target: typeof sddm !== "undefined" ? sddm : null
+        ignoreUnknownSignals: true
+        function onSurfaceRevealed() { playLockReveal() }
+        function onInformationMessage(message) { root.authInfo = message || ""; errText.text = root.authInfo.toUpperCase(); passInput.forceActiveFocus() }
+        function onErrorMessage(message) { errText.text = (message || "").toUpperCase() }
         function onLoginSucceeded() {
+            authWatchdog.stop()
             if (typeof sddm !== "undefined" && sddm.fingerprintUnlock === true) {
                 // Sensor win: skip the windup, play the reveal flourish, no
                 // second authentication. The _unlocked guard prevents
@@ -369,8 +456,11 @@ Rectangle {
                 boomSequence.stop()
                 boomReveal.start()
             }
+            // auth already committed, so this is cosmetic only
+            if (root.enableWindup)
+                playUnlockReveal()
         }
-        function onLoginFailed() { _unlocked = false; isWindup = false; windupAnim.stop(); boomTriggerTimer.stop(); boomSequence.stop(); root.windupOffset = 0; root.boomScale = 1.0; root.boomOpacity = 0.0; root.sparkIntensity = 0; errText.text = "ACCESS DENIED"; passInput.text = ""; passInput.forceActiveFocus(); shake.start() }
+        function onLoginFailed() { authWatchdog.stop(); clearUnlockFlash(); root.authInfo = ""; errText.text = I18n.tr("ACCESS DENIED"); passInput.text = ""; passInput.forceActiveFocus(); shake.start() }
     }
     SequentialAnimation {
         id: shake
@@ -383,5 +473,94 @@ Rectangle {
         Text { id: actTxt; anchors.right: parent.right; anchors.rightMargin: actM.containsMouse ? 15 * s : 0; text: label.toUpperCase(); color: actM.containsMouse ? root.mainText : root.dimText; font.family: outfitFont.name; font.pixelSize: 10 * s; font.letterSpacing: 3 * s; Behavior on color { ColorAnimation { duration: 200 } } Behavior on anchors.rightMargin { NumberAnimation { duration: 200 } } }
         Text { text: "✦"; anchors.left: actTxt.right; anchors.leftMargin: 4 * s; anchors.verticalCenter: actTxt.verticalCenter; color: root.mainText; opacity: actM.containsMouse ? 1.0 : 0; font.pixelSize: 8 * s; Behavior on opacity { NumberAnimation { duration: 200 } } }
         MouseArea { id: actM; anchors.fill: parent; hoverEnabled: true; onClicked: { actItem.clicked() } cursorShape: Qt.PointingHandCursor }
+    }
+    // swww-style circular reveal: an inverted OpacityMask punches a growing
+    // hole in a surface-colour curtain; the layers drop when idle.
+    readonly property real revealDiag: Math.sqrt(width * width + height * height)
+    property real revealR: 0
+    property bool revealActive: false
+
+    Item {
+        id: revealCurtain
+        anchors.fill: parent
+        z: 20000
+        visible: root.revealActive
+        layer.enabled: root.revealActive
+        layer.effect: OpacityMask { invert: true; maskSource: revealMaskSrc }
+        Rectangle { anchors.fill: parent; color: root.bgColor }
+    }
+    Item {
+        id: revealMaskSrc
+        anchors.fill: parent
+        visible: false
+        layer.enabled: root.revealActive
+        Rectangle {
+            anchors.centerIn: parent
+            width: root.revealR * 2
+            height: root.revealR * 2
+            radius: root.revealR
+            color: "white"
+        }
+    }
+
+    NumberAnimation {
+        id: revealIn
+        target: root; property: "revealR"
+        from: 0; to: root.revealDiag; duration: 1150; easing.type: Easing.InOutCubic
+        onFinished: root.revealActive = false
+    }
+    NumberAnimation {
+        id: revealOut
+        target: root; property: "revealR"
+        from: root.revealDiag; to: 0; duration: 560; easing.type: Easing.InOutCubic
+    }
+
+    function playLockReveal() {
+        revealOut.stop()
+        root.uiOpacity = 1
+        root.revealR = 0
+        root.revealActive = true
+        revealIn.restart()
+    }
+    function playUnlockReveal() {
+        revealIn.stop()
+        root.revealR = root.revealDiag
+        root.revealActive = true
+        revealOut.restart()
+    }
+
+    // Prefer the session matching the running compositor, resolved from the
+    // environment by the shim (sessionModel.desktopName), never a name literal.
+    Item {
+        visible: false
+        Repeater {
+            id: sessionScan
+            model: (typeof sessionModel !== "undefined") ? sessionModel : null
+            delegate: Item { property string sName: model.name || "" }
+        }
+    }
+    function preferredSessionIndex() {
+        if (typeof sessionModel === "undefined")
+            return 0
+        var want = (typeof sessionModel.desktopName === "string") ? sessionModel.desktopName : ""
+        var exact = -1, loose = -1
+        for (var i = 0; i < sessionScan.count; i++) {
+            var it = sessionScan.itemAt(i)
+            if (!it)
+                continue
+            var low = (it.sName || "").toLowerCase()
+            // uwsm-managed is a duplicate entry Ryoku's logout path does not drive.
+            if (low.indexOf("uwsm") >= 0)
+                continue
+            if (want !== "" && low === want)
+                exact = i
+            else if (want !== "" && low.indexOf(want) >= 0 && loose < 0)
+                loose = i
+        }
+        if (exact >= 0)
+            return exact
+        if (loose >= 0)
+            return loose
+        return (sessionModel.lastIndex >= 0) ? sessionModel.lastIndex : 0
     }
 }

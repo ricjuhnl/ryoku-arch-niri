@@ -2,7 +2,312 @@
 
 ## Unreleased
 
+### Added
+- **One keybind catalogue for both compositors.** `wm/binds.go` names every
+  shipped shortcut once (id, label, hint, category, default chord), and each
+  provider's `binds` verb reports the full effective legend: what it bound,
+  what the user rebound, and what it cannot do with a reason. New shortcuts on
+  both desktops: Page Up/Down and Shift for workspace navigation and sending
+  windows, Super+Alt+arrows to focus a screen and Shift/Ctrl variants to send a
+  window or a whole workspace there, Alt+Tab for the last window, Super+T for
+  a tabbed column or group, Super+D to maximise, Super+C to centre, Super+[ ]
+  to merge a window into its neighbour, and the number pad for workspaces 1 to
+  10 with NumLock on or off. niri also gains reorder-workspace (Super+Ctrl+Page
+  Up/Down), first and last column, preset window heights and a shortcut
+  inhibit toggle; Hyprland reports those as not available instead of hiding
+  them (`wm/niri/config_binds.go`, `wm/hyprland/legend.go`).
+- **The niri border follows the wallpaper palette, like Hyprland's.** The
+  provider recolours the border from the live palette on every wallpaper or
+  scheme change through a shared `paletteBorder` capability, and a new
+  `Follow the wallpaper` switch on the Hub's Borders tab pins the fixed colours
+  instead on either compositor (`wm/niri/act.go`, `wm/hyprland/act.go`,
+  `shell/ipc/matugen.go`, `hub/quickshell/schema/WindowSettings.js`).
+- **The niri provider models what niri 26.04 can do.** Blur (global passes and
+  noise, per-window and per-app background effects), a border or focus ring
+  choice with gradients, the workspace background, tabbed columns, preset
+  window heights, the overview backdrop colour and workspace shadow, nine
+  per-animation springs and curves, layer rules, the `columnwidth`, `minsize`,
+  `maxsize`, `scrollfactor`, `tiledstate`, `babaisfloat`, `noshadow`, `blur`,
+  `xray` and `blockout` window-rule actions, and the warp-to-focus, scroll
+  cap, auto back-and-forth, mod key, power key and drag-edge input knobs, each
+  a store key with a Hub row. The emitter is one concern per file and the
+  unhonored reasons name what niri really lacks (`wm/niri/config_*.go`,
+  `wm/niri/schema_*.json`, `wm/niri/apply.go`).
+- **Seam actions for what used to be Hyprland-only scripts.** `nightlight.on`
+  and `nightlight.off` with a `nightLight` capability, `input.touchpad` with
+  `touchpadToggle`, `output.cycle` and `output.enable`, `window.summon` and
+  `decoration.gameMode`; providers also publish the window-rule actions they
+  honour (`wm/caps.go`, `wm/action.go`, `wm/hyprland/act.go`, `wm/niri/act.go`).
+
 ### Fixed
+- **niri draws the window border the user sized.** niri 26.04 keeps its border
+  off unless the block carries an explicit `on`, so the sized border never drew
+  and the thickness slider did nothing; per-app overrides resolve the same way
+  (`wm/niri/config_layout.go`).
+- **A packaged niri box gets every helper the shell calls.** The neutral leaf
+  scripts ship with the shell, hypridle and hyprpicker are base dependencies,
+  idle management renders its own config from the Hub policy, and the dev
+  deploy lays only the live provider's scripts so a checkout no longer masks
+  what a package is missing (`release/packages/*/PKGBUILD`, `shell/deploy.sh`,
+  `system/hardware/power/ryoku-idle`).
+- Settings rejects null desktop save and preview requests before they can
+  replace saved preferences. Empty JSON stores containing `null` now recover
+  as an editable empty store instead of crashing the next edit.
+- Saved window animation overrides using `snap` no longer report a missing
+  bezier after switching presets. The base loader supplies the Minimal curve;
+  active presets and custom curves can still override it.
+
+### Added
+- **`CardColumns`: a page body of blocks, laid into balanced columns.** It takes
+  the children a page already declares, measures them at the column width, and
+  splits them so the columns end level, with a `fullWidth: true` child taking a
+  band across them; `colWidth` is published for a delegate that sizes itself to
+  its column.
+- **A numeric readout is typed into.** `SettingRow` turns a stepper's number or a
+  slider's percentage into a field on click or Enter and reports the typed text,
+  which `SettingsSheet` clamps into the row's own range and stores in the kind the
+  row speaks.
+- **A folded card says what it hides.** `SettingCard.summary` puts a count
+  ("4 SWITCHES") in the header of a collapsed group, because a folded card with no
+  trace of its contents reads as an empty one.
+
+### Fixed
+- **A Hub page holds still.** Section switches used to flicker: the incoming page
+  was centred from its measured height and had its rows inflated by a timer that
+  fired for up to three seconds after it appeared, so cards hopped while the reader
+  was already looking at them. Content now anchors to the top, the fly-in is the
+  crossfade alone, and the page's first layout is synchronous.
+- **Every Hub scroller answers the wheel.** The rail, the page bodies and the
+  popover lists showed a scrollbar that ignored the wheel, so a page taller than the
+  window could only be dragged, and the rail's lower sections could not be reached
+  by hand. `WheelScroll` scrolls them, clamped to their bounds.
+- **Bar Studio uses the window.** BAR STYLE is a full-width band that fills its rows
+  with tiles instead of cramming eight into half the page, and the LAYOUT card no
+  longer promises controls that are not below it.
+- **Widget previews stay inside their card.** A preview could be scaled past its
+  natural size and clip flush against the footer, so the clock's digits ran into the
+  widget's name and toggle; previews are now capped at their natural size and the
+  clock reports its real height.
+- **Descriptions are readable again.** `inkMuted` and `inkFaint` sat below the
+  4.5:1 floor this document promises once the wallpaper dimmed the palette; both
+  tiers are raised.
+- **The Profile page says which compositor you are running.** The dossier read
+  "Hyprland" from a hardcoded name; it now reads the session's own compositor.
+- **A tab never moves its neighbours.** Every tab plate reserves the `//` lead as
+  a slot and only inks it when active, so selecting a tab no longer widens that
+  plate and shoves the others sideways, on any page.
+- **A page's head and grid hold still across tabs.** The sheet's geometry comes
+  from the page's width, not from how many groups the open tab happens to have.
+  A one-group tab (Window Manager's `BORDERS`, `MOTION`) used to shrink the sheet
+  to a narrow column in the middle of the window and drag the title and tab row
+  with it, which read as the whole page shuffling.
+- **Unfolding a group no longer moves cards between columns.** The column split
+  is kept until the set of visible blocks changes, so a drawer that opens spreads
+  only its own column; measured: cards in other columns keep their exact x and y.
+- **The Updates version pairs are readable.** Each pair is two columns with the
+  incoming version carrying more ink than the one it replaces, instead of one
+  run-on string at the smallest type.
+- **The Hub's page corners are quiet.** The decorative marginalia strips beside the
+  FILES and UPDATES buttons are gone: they crowded those controls and carried
+  hand-written group indices that were often wrong.
+
+### Changed
+- **The Hub's chrome is one fixed layout, not a per-page guess.** The `FILES` and
+  `UPDATES` chips are control-sized (`30` tall, `S4` padding) and take the page's
+  own right inset, so they line up with the last card instead of floating inside
+  it, and Profile's `EDIT` sits below them rather than stacking under `UPDATES`.
+- **A tab switch fades instead of snapping.** The card set crossfades on a tab
+  change the way a page swap does, and a disabled control stays legible at half
+  opacity rather than nearly invisible.
+- **Window Manager's cannot-do list folds.** The tab keeps the list, behind a
+  header that says how many settings it holds, instead of opening on a wall of
+  near-identical lines.
+- **Input's keyboard band carries the facts.** The layout, variant, and the caps,
+  compose and switch keys sit beside the diagram, and the pointer descriptions
+  fit one line each.
+- **Every hand-built list is on the settings-row rhythm.** Import's "what it
+  brings over" plate, Updates' package and commit rows, and Displays' saved
+  profiles drew their own tighter spacing (8px between lines, text close to the
+  container edge); they are now cards and rows with `S4` insets and a hairline
+  between rows, the same as every schema page.
+- **Every description fits its row.** A settings description is one line and 60
+  characters at a three-column card, a page blurb 70. Measured on the live Hub:
+  no description elides any more (was 8), and the two-line rows fell from 52 to 7,
+  all of them rows whose own control is wide.
+- **Autostart and Environment are one Session page.** Two thin pages became one
+  with two named clusters (what runs at login, the variables the session exports);
+  an old deep link or the remembered section still lands on it.
+- **`Sw` shows its state twice.** The track tints and the knob fills as the switch
+  goes on, because an off switch drawn as an empty outline reads as an unchecked
+  box at a glance.
+
+### Added
+- **The Hub fills the window it opens in.** A framed page takes the width beside
+  the rail instead of a centred `Tokens.pageMax` column, its head sits on the body's
+  grid, and the card grid runs as many columns as the measure holds (three on a
+  page-wide window). A page with few groups gets fewer, wider columns rather than
+  a lone card beside a window-wide gap. `Tokens.contentMax` still caps a stack of
+  prose, and a page that reads better short caps itself.
+- **The picker's option count is gone from the row.** `PickBar` showed how many
+  options the catalogue held beside its chevron; that number means nothing to a
+  reader, so the chevron alone is the affordance now.
+
+### Removed
+- **The Hub's orphaned rices schema.** `schema/RicesPage.js` was a generated
+  inventory with no consumer left after the rices moved to ryogami.
+- **The decor level and its rich tier.** `Tokens.decor` and the flags derived
+  from it (`decorRich`, `decorMinimal`, `showPosters`, `showGrid`, `showGrain`,
+  `showSeals`, `monoHeads`) are gone, along with the `hubDecor` shell.json key
+  they read: one setting voice ships now. `fTitle` is 32 everywhere,
+  `SettingCard` and `Cell` use sentence case at every width, `Grain` keeps a
+  fixed art opacity, and the poster plates `Decor`, `Placard`, `DitherField` and
+  the `DecorStore` singleton are deleted from `Ryoku.Ui` (their only callers were
+  the Hub's rich tier and ryovm's hero plates).
+
+- **The bar stream can drift again when nothing is playing.** A new "Drift when
+  silent" switch keeps the gap stream animating on any power profile, not only
+  Performance. It sits next to Gap animation in the bar control centre and under
+  Settings > Performance, ships off so a quiet desktop still idles cheap, and
+  music animates the bar either way (`shell/services/Perf.qml`,
+  `bar/barstyles/qsbar/controlcenter/routes/BarsRoute.qml`).
+- **Ryotunes skins are a RyoStore category.** RyoStore serves the community
+  Ryotunes-skin catalogue as `ryotunes-skins` (group `wear`): a skin installs
+  as a generic product into `~/.local/share/ryoku/ryotunes-skins/<id>/` with a
+  receipt, and Ryotunes searches it as its "store" skin source. The store only
+  installs and removes; the worn skin is chosen in Ryotunes (Settings ›
+  Appearance, or `ryotunes-cli skin use`), and an item reads as active when
+  `~/.config/ryotunes/client.json` `skin` equals its id. `ryostore open
+  ryotunes-skins` opens the store on it
+  (`apps/ryostore/backend/provider_ryotunes_skins.go`).
+- **Key sounds: a keyboard sound on every key press, from the compositor.**
+  `hyprland/plugins/keysounds` is Ryoku's first compositor plugin: Hyprland
+  sees every key before any app does, so one plugin covers every window with
+  nothing grabbing input. Samples play through libcanberra (the sound server
+  caches them, so a press costs one small request and presses mix there), a
+  random variant per press, with dedicated samples for Space, Enter and
+  Backspace and their releases when the profile has them. Eleven profiles ship,
+  each a recording of the real switch cut from the MIT-licensed Mechvibes packs
+  at build time and named for it: cherry-mx-blue, cherry-mx-brown (default),
+  cherry-mx-black, cherry-mx-red, topre, creamy, nk-cream, holy-panda, tealios,
+  crystal-purple, oreo. `ryoku-keysounds-import <pack>` turns any Mechvibes
+  pack into a profile of your own under `~/.local/share/ryoku/keysounds/`, and
+  a plain folder of samples named by role is one too. Off by default;
+  Settings > Plugins > Key sounds turns it on, picks the switch, sets the
+  volume; a change is heard as it is picked. Package `ryoku-keysounds`.
+- **Hyprland plugins rebuild themselves after a Hyprland bump.** Every plugin
+  copy Ryoku builds carries an `.abi` receipt (the compositor build it was
+  compiled for), `ryoku doctor` rebuilds each enabled plugin whose receipts no
+  longer match the installed headers on every `ryoku update`, and `deploy.sh`
+  builds through the same `ryoku-hub hypr plugins rebuild --stale` instead of
+  its own makepkg loop, rebuilding on any ABI change rather than only a
+  Hyprland version change, which is what left a cursor-motion plugin refusing
+  to load after an aquamarine bump (`cli/internal/doctor/reconcile_hypr_plugins.go`,
+  `shell/deploy.sh`; see `docs/hyprland-plugins.md`).
+- **A documented fix for TVs and ultrawides that refuse a resolution.** Some
+  panels (LG ultrawides, TVs over HDMI) list a mode but snap back to a smaller
+  one, with Hyprland logging "REJECTED available mode" beside "atomic drm
+  request: failed to commit" -- the DRM backend rejecting buffer-format modifiers
+  for that sink. `monitors_user.lua.example` now documents the `AQ_NO_MODIFIERS=1`
+  override that cures it (Ryoku already sets it on AMD/Intel but not nvidia, where
+  it can crash a hybrid laptop, so a single-GPU nvidia TV box sets it by hand),
+  plus a note on Hyprland's whole-pixel scale rule
+  (`hyprland/monitors_user.lua.example`).
+- **Ryotunes joins the matugen app suite.** The native music client reads its
+  palette as a Ryoku skin: matugen fans the Material 3 roles into
+  `~/.config/ryotunes/skins/matugen/skin.json`, the user skins dir where the
+  client's Skin singleton loads it as the "System" theme, regenerated on every
+  wallpaper change (`shell/matugen/templates/ryotunes.json`,
+  `shell/matugen/apps.toml`, `shell/ipc/matugen.go`, `../hub/backend/matugen.go`).
+
+### Fixed
+- **One shared Bluetooth name resolver, used by every surface.** `Ryoku.Ui`
+  gains `BtName`, which turns a Quickshell Bluetooth device into the name to
+  show: it keeps a real user alias, otherwise takes the device-reported name,
+  and skips a BlueZ alias that is only the device's own address
+  (`ui/lib/bluetooth.js`).
+- **Niri screen sharing works with the GNOME portal again.** Ryoku's
+  `GDK_BACKEND=wayland,x11,*` preference was inherited by
+  `xdg-desktop-portal-gnome`, which then treated the Niri session as an
+  incompatible display server and exposed Settings only, leaving OBS,
+  browsers and Electron clients without a ScreenCast backend. The portal
+  service now drops only `GDK_BACKEND`, while normal GTK applications keep
+  Ryoku's Wayland-first preference
+  (`shell/systemd/user/xdg-desktop-portal-gnome.service.d/10-ryoku.conf`).
+- **The gap stream clears when it stops instead of freezing a frame.** A silent
+  bar with no drift left the last shader frame stuck in the gaps; it now hides,
+  so the stream reads as off, then on when audio returns
+  (`bar/barstyles/qsbar/modules/StreamShader.qml`).
+- **Settings search for the workspace and launcher marks lands on the right tab
+  again.** Those controls moved to the bar control centre's Identity tab, but
+  the search index still sent "Workspace marker" and "Launcher mark" to the old
+  Widgets page, so a search dropped you where they no longer were. They route to
+  Identity now (`shell/modules/bar/barstyles/qsbar/controlcenter/ControlCenter.qml`).
+- **Floating windows fit the screen they open on (#147).** Files, Ryoku
+  Settings, Ryostore, Ryovm and the other fixed-size floating rules asked for
+  1500x850 or bigger, so on a 1366x768 panel Files opened larger than the
+  monitor and read as a stuck fullscreen that no dconf setting could undo. Every
+  size in `hyprland/modules/window_rules.lua` is now capped at the monitor
+  (92% wide, 88% tall) through Hyprland's size expressions, so the same rule
+  fits a laptop panel and a desktop monitor.
+- **Rashin chat follows a hermes reconfigure (#145).** Switching hermes to a
+  new provider in the terminal (say NVIDIA NIM) left the dashboard chat failing
+  with "HTTP 404" on every turn: the daemon re-applied the model it had
+  remembered from before the switch onto the new endpoint, and the resident
+  `hermes acp` process kept the provider and keys it loaded at spawn. The
+  remembered pick is now tied to the hermes config it was made under and
+  dropped when that changes, and a chat turn after `config.yaml` or `.env`
+  changed respawns the session first (`rashin/backend/`).
+- **Google Chrome loads pages and shares the keyring, like Chromium.** Ryoku
+  pinned native Wayland and the GNOME keyring for Chromium (`chromium-flags.conf`)
+  and for Electron apps (`ELECTRON_OZONE_PLATFORM_HINT`), but Google Chrome reads
+  a different file, `chrome-flags.conf`, which nothing shipped -- so Chrome alone
+  fell back to Xwayland, where on an NVIDIA card it renders pages blank while
+  Discord and Chromium (both native Wayland) work. The one flags source now lays
+  as both `chromium-flags.conf` and `chrome-flags.conf`, so Chrome gets
+  `--ozone-platform=wayland` and `--password-store=gnome-libsecret` too. Delivered
+  to fresh and existing boxes by the package and `materialize`.
+- **Animations no longer break the desktop on a non-default preset.** Ryoku's
+  signature window curves (`ryokuBloom`, `ryokuSettle`, plus `easeOutQuint`,
+  `quick`, `almostLinear`, `ryokuWobble`) were defined only by the `ryoku`
+  animation preset, yet the Hub's generated `settings.lua` references them for
+  window motion on whatever preset is active -- so switching to any other preset
+  (the dusky ports: bounce, air, fade, minimal, ...) left those beziers undefined
+  and Hyprland threw its config-error overlay ("no bezier ryokuBloom /
+  ryokuSettle"). The preset loader (`modules/animations.lua`) now defines these
+  base curves before any preset loads, so `settings.lua`'s references always
+  resolve; it ships in the desktop package, so `ryoku update` (materialize) heals
+  an already-broken `settings.lua` with no regeneration.
+- **Screen recording works on hybrid-GPU laptops again.** On a machine whose
+  panel is driven by a card gpu-screen-recorder can't enumerate (an AMD iGPU
+  display alongside a discrete NVIDIA GPU), the backend probe mistook the webcam
+  gsr lists (`/dev/video0|1920x1080@30hz`) for a monitor and launched a KMS
+  capture that died at once with "no /dev/dri/cardX device found", so recording
+  closed instantly. With a live wallpaper up it fell to wf-recorder, whose VAAPI
+  can't encode the compositor's dma-buf here, so it dropped to software and
+  choked after ~5s. Such a box now records through gpu-screen-recorder's portal
+  capture (PipeWire, GPU-encoded, and it composites the live wallpaper in), and
+  the probe no longer counts a webcam as a monitor. KMS capture still leads where
+  it works, so ordinary machines are unchanged. Ryoku Motion (studio) capture
+  shares the path and is fixed too.
+- **Recording no longer saves an empty clip when the desktop portal stalls.** On
+  the hybrid boxes that record through gpu-screen-recorder's portal capture, some
+  xdg-desktop-portal backends never negotiate a stream -- gsr stays alive but
+  writes nothing, and a stalled gsr ignores SIGINT/SIGTERM so even stop couldn't
+  end it. The recorder now judges the capture by frames actually landing, force-
+  kills a stalled gsr, and falls back to wf-recorder (caching that backend so the
+  next capture skips the doomed portal probe).
+- **The dock's window preview no longer opens alongside the music card.**
+  Hovering the dock's music chip raised its now-playing card but also popped the
+  app window-preview strip, because the band suppressed the app preview from a
+  cursor coordinate that could desync from the chip. It now keys the suppression
+  off the chip's own hover -- the same signal that raises the music card -- so the
+  two surfaces are mutually exclusive.
+- **Device lighting is re-applied on resume from suspend.** Theme colours only
+  reached the RGB devices on a palette change and at login, so after waking from
+  suspend an OpenRGB motherboard/RAM/mouse (which reset on power loss) sat on its
+  firmware default and the keyboard could hold a stale colour. hypridle's
+  `after_sleep_cmd` now also runs `ryoku-hub lighting apply` (backgrounded, so it
+  never delays the screen coming back).
 - **Video decode no longer freezes on hybrid laptops.** The session forced the
   nvidia VA-API/GLX drivers whenever the nvidia driver merely existed, so on a
   hybrid where the Intel or AMD iGPU drives the panel, video froze. It now takes

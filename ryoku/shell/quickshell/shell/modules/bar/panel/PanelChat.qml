@@ -75,6 +75,14 @@ Item {
         var c = t.lastIndexOf(":");
         return c >= 0 ? t.slice(c + 1) : t;
     }
+    // The chip reads "Agent · model" when the backend exposes a model, or just
+    // the agent name when it does not (omp and others carry their own model).
+    function chipLabel() {
+        var a = String(Needle.currentAgent);
+        var m = Needle.currentModel.length > 0 ? root.shortModel(Needle.currentModel) : "";
+        if (a.length > 0 && m.length > 0) return a + " · " + m;
+        return a.length > 0 ? a : m;
+    }
     // Markdown collapses single newlines, so line-structured output (a /tools
     // list, terse notes) renders as one run-on paragraph. Turn each non-blank
     // newline into a hard break so the line structure survives; blank-line
@@ -259,7 +267,7 @@ Item {
                 height: 18 * root.s
                 width: chipRow.implicitWidth + 12 * root.s
                 radius: 9 * root.s
-                visible: Needle.currentModel.length > 0
+                visible: Needle.currentModel.length > 0 || Needle.currentAgent.length > 0
                 color: chipArea.containsMouse || root.modelMenuOpen
                     ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.18)
                     : Qt.rgba(Theme.onSurface.r, Theme.onSurface.g, Theme.onSurface.b, 0.06)
@@ -270,7 +278,7 @@ Item {
                     spacing: 3 * root.s
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
-                        text: root.shortModel(Needle.currentModel)
+                        text: root.chipLabel()
                         color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurface)
                         font.family: Theme.mono
                         font.pixelSize: 8 * root.s
@@ -345,59 +353,163 @@ Item {
         onClicked: root.modelMenuOpen = false
     }
     Rectangle {
+        id: pickerMenu
         visible: root.modelMenuOpen
         z: 21
         anchors.top: header.bottom
         anchors.right: parent.right
         anchors.topMargin: 4 * root.s
         anchors.rightMargin: 14 * root.s
-        width: 220 * root.s
-        height: Math.min(260 * root.s, modelList.contentHeight + 8 * root.s)
+        width: 232 * root.s
+        height: Math.min(340 * root.s, pickerFlick.contentHeight + 12 * root.s)
         radius: Theme.radiusWidget
         color: Theme.surfaceContainer
         border.width: Theme.borderWidth
         border.color: Theme.outline
         SumiEdge { radius: Theme.radiusWidget }
-        ListView {
-            id: modelList
+        Flickable {
+            id: pickerFlick
             anchors.fill: parent
-            anchors.margins: 4 * root.s
+            anchors.margins: 6 * root.s
+            contentHeight: pickerCol.implicitHeight
             clip: true
-            model: Needle.models
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-            delegate: Rectangle {
-                id: mrow
-                required property int index
-                required property var modelData
-                width: ListView.view ? ListView.view.width : 0
-                height: 30 * root.s
-                radius: 6 * root.s
-                readonly property bool current: Needle.currentModel === mrow.modelData.id
-                color: mrowArea.containsMouse
-                    ? Qt.rgba(Theme.onSurface.r, Theme.onSurface.g, Theme.onSurface.b, 0.10)
-                    : mrow.current ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.14)
-                    : "transparent"
+            Column {
+                id: pickerCol
+                width: pickerFlick.width
+                spacing: 1 * root.s
+
+                // AGENT — which assistant answers; a pick is a live backend switch.
                 Text {
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    anchors.leftMargin: 8 * root.s
-                    anchors.rightMargin: 8 * root.s
-                    text: mrow.modelData.name || mrow.modelData.id
-                    elide: Text.ElideRight
-                    color: mrow.current ? Theme.primary : Theme.inkOn(Theme.effectiveSurface, Theme.onSurface)
-                    font.family: Theme.fontPrimary
-                    font.pixelSize: 10 * root.s
+                    leftPadding: 6 * root.s
+                    topPadding: 3 * root.s
+                    bottomPadding: 3 * root.s
+                    text: I18n.tr("AGENT")
+                    color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurfaceVariant, 3.0)
+                    font.family: Theme.mono
+                    font.pixelSize: 8 * root.s
                 }
-                MouseArea {
-                    id: mrowArea
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        Needle.setModel(mrow.modelData.id);
-                        root.modelMenuOpen = false;
+                Repeater {
+                    model: Needle.backends
+                    delegate: Rectangle {
+                        id: arow
+                        required property var modelData
+                        width: pickerCol.width
+                        height: 30 * root.s
+                        radius: 6 * root.s
+                        readonly property bool active: arow.modelData.active === true
+                        readonly property bool avail: arow.modelData.available === true
+                        color: aArea.containsMouse && arow.avail
+                            ? Qt.rgba(Theme.onSurface.r, Theme.onSurface.g, Theme.onSurface.b, 0.10)
+                            : arow.active ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.14)
+                            : "transparent"
+                        MaterialIcon {
+                            anchors.left: parent.left
+                            anchors.leftMargin: 6 * root.s
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "check"
+                            font.pixelSize: 12 * root.s
+                            visible: arow.active
+                            color: Theme.primary
+                        }
+                        Text {
+                            anchors.left: parent.left
+                            anchors.leftMargin: 24 * root.s
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: arow.modelData.name || arow.modelData.id
+                            color: arow.active ? Theme.primary
+                                : arow.avail ? Theme.inkOn(Theme.effectiveSurface, Theme.onSurface)
+                                : Theme.inkOn(Theme.effectiveSurface, Theme.onSurfaceVariant, 3.0)
+                            font.family: Theme.fontPrimary
+                            font.pixelSize: 10 * root.s
+                        }
+                        Text {
+                            anchors.right: parent.right
+                            anchors.rightMargin: 8 * root.s
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: !arow.avail
+                            text: I18n.tr("needs adapter")
+                            color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurfaceVariant, 3.0)
+                            font.family: Theme.mono
+                            font.pixelSize: 8 * root.s
+                        }
+                        MouseArea {
+                            id: aArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            enabled: arow.avail
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                Needle.setBackend(arow.modelData.id);
+                                root.modelMenuOpen = false;
+                            }
+                        }
+                    }
+                }
+
+                // divider + MODEL — only for agents that expose a model list.
+                Rectangle {
+                    x: 4 * root.s
+                    width: pickerCol.width - 8 * root.s
+                    height: Theme.borderWidth
+                    color: Theme.outline
+                    visible: Needle.models.length > 0
+                }
+                Text {
+                    leftPadding: 6 * root.s
+                    topPadding: 3 * root.s
+                    bottomPadding: 3 * root.s
+                    visible: Needle.models.length > 0
+                    text: I18n.tr("MODEL")
+                    color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurfaceVariant, 3.0)
+                    font.family: Theme.mono
+                    font.pixelSize: 8 * root.s
+                }
+                Repeater {
+                    model: Needle.models
+                    delegate: Rectangle {
+                        id: mrow
+                        required property var modelData
+                        width: pickerCol.width
+                        height: 28 * root.s
+                        radius: 6 * root.s
+                        readonly property bool current: Needle.currentModel === mrow.modelData.id
+                        color: mArea.containsMouse
+                            ? Qt.rgba(Theme.onSurface.r, Theme.onSurface.g, Theme.onSurface.b, 0.10)
+                            : mrow.current ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.14)
+                            : "transparent"
+                        MaterialIcon {
+                            anchors.left: parent.left
+                            anchors.leftMargin: 6 * root.s
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "check"
+                            font.pixelSize: 12 * root.s
+                            visible: mrow.current
+                            color: Theme.primary
+                        }
+                        Text {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.leftMargin: 24 * root.s
+                            anchors.rightMargin: 8 * root.s
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: mrow.modelData.name || mrow.modelData.id
+                            elide: Text.ElideRight
+                            color: mrow.current ? Theme.primary : Theme.inkOn(Theme.effectiveSurface, Theme.onSurface)
+                            font.family: Theme.fontPrimary
+                            font.pixelSize: 10 * root.s
+                        }
+                        MouseArea {
+                            id: mArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                Needle.setModel(mrow.modelData.id);
+                                root.modelMenuOpen = false;
+                            }
+                        }
                     }
                 }
             }
@@ -486,7 +598,7 @@ Item {
                         anchors.leftMargin: 10 * root.s
                         anchors.rightMargin: 8 * root.s
                         anchors.verticalCenter: parent.verticalCenter
-                        text: (sRow.modelData.title && sRow.modelData.title.length) ? sRow.modelData.title : "untitled"
+                        text: (sRow.modelData.title && sRow.modelData.title.length) ? sRow.modelData.title : I18n.tr("untitled")
                         elide: Text.ElideRight
                         color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurface)
                         font.family: Theme.fontPrimary
@@ -538,6 +650,7 @@ Item {
             required property bool streaming
             required property bool failed
             required property string activityJson
+            required property string permJson
 
             width: ListView.view ? ListView.view.width : 0
             spacing: 5 * root.s
@@ -579,9 +692,14 @@ Item {
                     anchors.margins: 8 * root.s
                     spacing: 6 * root.s
 
-                    // working indicator (agent, pre-answer)
+                    readonly property var permReq: {
+                        try { return msg.permJson.length > 0 ? JSON.parse(msg.permJson) : null; }
+                        catch (e) { return null; }
+                    }
+
+                    // working indicator (agent, pre-answer); the approval card replaces it
                     Row {
-                        visible: !msg.isUser && msg.streaming && msg.body.length === 0
+                        visible: !msg.isUser && msg.streaming && msg.body.length === 0 && bodyCol.permReq === null
                         spacing: 6 * root.s
                         Rectangle {
                             width: 6 * root.s; height: 6 * root.s; radius: width / 2
@@ -603,18 +721,180 @@ Item {
                         }
                     }
 
-                    // live activity: the tools the agent runs and its reasoning
+                    // approval: hermes paused on a tool and waits for a pick. A
+                    // card in the accent, not a status line: this is the one thing
+                    // the turn cannot continue without.
+                    Rectangle {
+                        id: permCard
+                        width: parent.width
+                        visible: !msg.isUser && msg.streaming && bodyCol.permReq !== null
+                        height: visible ? permCol.implicitHeight + 20 * root.s : 0
+                        radius: 9 * root.s
+                        color: Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.10)
+                        border.width: 1
+                        border.color: Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.45)
+                        Column {
+                            id: permCol
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 10 * root.s
+                            spacing: 8 * root.s
+                            Row {
+                                spacing: 6 * root.s
+                                MaterialIcon {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "shield"
+                                    font.pixelSize: 13 * root.s
+                                    color: Theme.primary
+                                }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: I18n.tr("NEEDS YOUR OK")
+                                    color: Theme.primary
+                                    font.family: Theme.mono
+                                    font.pixelSize: 8 * root.s
+                                    font.letterSpacing: 1.2
+                                    font.weight: Font.DemiBold
+                                }
+                            }
+                            Text {
+                                width: parent.width
+                                text: bodyCol.permReq ? String(bodyCol.permReq.title || "") : ""
+                                color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurface)
+                                font.family: Theme.mono
+                                font.pixelSize: 10.5 * root.s
+                                wrapMode: Text.WrapAnywhere
+                                maximumLineCount: 3
+                                elide: Text.ElideMiddle
+                            }
+                            Flow {
+                                width: parent.width
+                                spacing: 6 * root.s
+                                Repeater {
+                                    // hermes usually offers its own reject option; add one only when it did not
+                                    model: {
+                                        var req = bodyCol.permReq;
+                                        if (!req) return [];
+                                        var opts = req.options.slice();
+                                        var hasReject = opts.some((o) => String(o.kind || "").indexOf("reject") >= 0);
+                                        return hasReject ? opts : opts.concat([{ id: "", name: I18n.tr("Decline"), kind: "reject" }]);
+                                    }
+                                    delegate: Rectangle {
+                                        id: permBtn
+                                        required property var modelData
+                                        readonly property bool allow: modelData.id !== "" && String(modelData.kind || "").indexOf("reject") < 0
+                                        height: 28 * root.s
+                                        width: permBtnRow.implicitWidth + 22 * root.s
+                                        radius: 7 * root.s
+                                        color: allow
+                                            ? (pbArea.containsMouse ? Qt.lighter(Theme.primary, 1.12) : Theme.primary)
+                                            : Qt.rgba(Theme.onSurface.r, Theme.onSurface.g, Theme.onSurface.b, pbArea.containsMouse ? 0.14 : 0.06)
+                                        border.width: allow ? 0 : 1
+                                        border.color: Qt.rgba(Theme.onSurface.r, Theme.onSurface.g, Theme.onSurface.b, 0.18)
+                                        Behavior on color { ColorAnimation { duration: Motion.fast } }
+                                        Row {
+                                            id: permBtnRow
+                                            anchors.centerIn: parent
+                                            spacing: 5 * root.s
+                                            MaterialIcon {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: permBtn.allow ? "check" : "close"
+                                                font.pixelSize: 13 * root.s
+                                                color: permBtn.allow ? Theme.inkOn(Theme.primary, Theme.onPrimary)
+                                                    : Theme.inkOn(Theme.effectiveSurface, Theme.onSurfaceVariant, 3.0)
+                                            }
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: String(permBtn.modelData.name || permBtn.modelData.id)
+                                                color: permBtn.allow ? Theme.inkOn(Theme.primary, Theme.onPrimary)
+                                                    : Theme.inkOn(Theme.effectiveSurface, Theme.onSurfaceVariant, 3.0)
+                                                font.family: Theme.fontPrimary
+                                                font.pixelSize: 11 * root.s
+                                                font.weight: permBtn.allow ? Font.DemiBold : Font.Normal
+                                            }
+                                        }
+                                        MouseArea {
+                                            id: pbArea
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: Needle.answerPermission(permBtn.modelData.id)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // live activity: the tools the agent runs and its reasoning. A
+                    // long run collapses to its last few steps behind a count, so a
+                    // twenty-file read does not push the answer off the panel.
                     Column {
                         id: activityCol
                         width: parent.width
                         spacing: 3 * root.s
-                        visible: !msg.isUser && actRepeater.count > 0
+                        visible: !msg.isUser && activityCol.items.length > 0
+                        property bool expanded: false
+                        readonly property int tail: 3
+                        readonly property var items: {
+                            try { return JSON.parse(msg.activityJson) || []; }
+                            catch (e) { return []; }
+                        }
+                        readonly property bool folded: !expanded && items.length > tail + 1
+                        readonly property string summary: {
+                            var byKind = {}, running = 0, failed = 0, tools = 0;
+                            for (var i = 0; i < items.length; i++) {
+                                var it = items[i];
+                                if (it.k !== "tool") continue;
+                                tools++;
+                                var kind = it.kind || "tool";
+                                byKind[kind] = (byKind[kind] || 0) + 1;
+                                if (it.status === "failed") failed++;
+                                else if (it.status !== "completed") running++;
+                            }
+                            var parts = [];
+                            for (var k in byKind)
+                                parts.push(byKind[k] + " " + k + (byKind[k] > 1 ? "s" : ""));
+                            var s = tools === 1 ? I18n.tr("%1 step").arg(tools) : I18n.tr("%1 steps").arg(tools);
+                            if (parts.length) s += " · " + parts.join(", ");
+                            if (running) s += " · " + I18n.tr("%1 running").arg(running);
+                            if (failed) s += " · " + I18n.tr("%1 failed").arg(failed);
+                            return s;
+                        }
+
+                        Item {
+                            width: parent.width
+                            height: 18 * root.s
+                            visible: activityCol.items.length > activityCol.tail + 1
+                            Row {
+                                anchors.left: parent.left
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 4 * root.s
+                                MaterialIcon {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: activityCol.expanded ? "expand_less" : "expand_more"
+                                    font.pixelSize: 13 * root.s
+                                    color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurfaceVariant, 3.0)
+                                }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: activityCol.summary
+                                    color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurfaceVariant, 3.0)
+                                    font.family: Theme.mono
+                                    font.pixelSize: 8.5 * root.s
+                                    font.letterSpacing: 0.4
+                                }
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: activityCol.expanded = !activityCol.expanded
+                            }
+                        }
                         Repeater {
                             id: actRepeater
-                            model: {
-                                try { return JSON.parse(msg.activityJson) || []; }
-                                catch (e) { return []; }
-                            }
+                            model: activityCol.folded ? activityCol.items.slice(activityCol.items.length - activityCol.tail) : activityCol.items
                             delegate: Item {
                                 id: actRow
                                 required property var modelData
@@ -667,11 +947,11 @@ Item {
                                     anchors.rightMargin: 6 * root.s
                                     anchors.top: parent.top
                                     text: actRow.isTool
-                                        ? ((actRow.modelData.title && actRow.modelData.title.length) ? actRow.modelData.title : (actRow.modelData.kind || "tool"))
+                                        ? ((actRow.modelData.title && actRow.modelData.title.length) ? actRow.modelData.title : (actRow.modelData.kind || I18n.tr("tool")))
                                         : (actRow.modelData.text || "")
-                                    wrapMode: Text.Wrap
+                                    wrapMode: actRow.isTool ? Text.NoWrap : Text.Wrap
                                     maximumLineCount: actRow.isTool ? 1 : 3
-                                    elide: Text.ElideRight
+                                    elide: actRow.isTool ? Text.ElideMiddle : Text.ElideRight
                                     textFormat: actRow.isTool ? Text.PlainText : Text.MarkdownText
                                     color: actRow.isTool ? Theme.inkOn(Theme.effectiveSurface, Theme.onSurface)
                                         : Theme.inkOn(Theme.effectiveSurface, Theme.onSurfaceVariant, 3.0)
@@ -791,7 +1071,7 @@ Item {
                                                 anchors.left: parent.left
                                                 anchors.leftMargin: 10 * root.s
                                                 anchors.verticalCenter: parent.verticalCenter
-                                                text: (blk.modelData.lang && blk.modelData.lang.length) ? blk.modelData.lang : "code"
+                                                text: (blk.modelData.lang && blk.modelData.lang.length) ? blk.modelData.lang : I18n.tr("code")
                                                 color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurfaceVariant, 3.0)
                                                 font.family: Theme.mono
                                                 font.pixelSize: 8 * root.s
@@ -930,26 +1210,142 @@ Item {
     // empty state
     Column {
         anchors.centerIn: list
-        width: list.width - 40 * root.s
-        spacing: 8 * root.s
+        width: Math.min(list.width - 32 * root.s, 300 * root.s)
+        spacing: 9 * root.s
         visible: Needle.convo.count === 0
 
         MaterialIcon {
             anchors.horizontalCenter: parent.horizontalCenter
             text: "cognition"
-            font.pixelSize: 30 * root.s
+            font.pixelSize: 32 * root.s
             fill: 0
-            color: Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.55)
+            color: Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.6)
+        }
+        Text {
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: Needle.ready ? I18n.tr("Ask the needle") : I18n.tr("Connect an AI")
+            color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurface)
+            font.family: Theme.display
+            font.pixelSize: 21 * root.s
         }
         Text {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
-            text: I18n.tr("Ask the needle anything. It knows this machine, your desktop, and the Ryoku source. Drop or paste an image to ask about it.")
+            text: Needle.ready
+                ? I18n.tr("It knows this machine, your desktop, and the Ryoku source. Drop in an image to ask about it.")
+                : I18n.tr("Rashin needs an AI to answer. Set it up once and the needle is ready.")
             wrapMode: Text.WordWrap
             color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurfaceVariant, 3.0)
             font.family: Theme.fontPrimary
-            font.pixelSize: 11.5 * root.s
-            lineHeight: 1.25
+            font.pixelSize: 11 * root.s
+            lineHeight: 1.3
+        }
+        Column {
+            visible: Needle.ready
+            width: parent.width
+            spacing: 6 * root.s
+            topPadding: 4 * root.s
+            Repeater {
+                model: [
+                    { icon: "bolt", text: I18n.tr("Why is my battery draining?") },
+                    { icon: "wallpaper", text: I18n.tr("How do I change my wallpaper?") },
+                    { icon: "terminal", text: I18n.tr("Where does the shell config live?") }
+                ]
+                delegate: Rectangle {
+                    id: ex
+                    required property var modelData
+                    width: parent.width
+                    height: 34 * root.s
+                    radius: 8 * root.s
+                    color: exArea.containsMouse
+                        ? Qt.rgba(Theme.onSurface.r, Theme.onSurface.g, Theme.onSurface.b, 0.08)
+                        : "transparent"
+                    border.width: 1
+                    border.color: Qt.rgba(Theme.onSurface.r, Theme.onSurface.g, Theme.onSurface.b, 0.14)
+                    Behavior on color { ColorAnimation { duration: Motion.fast } }
+                    Row {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 10 * root.s
+                        anchors.right: parent.right
+                        anchors.rightMargin: 10 * root.s
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 9 * root.s
+                        MaterialIcon {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: ex.modelData.icon
+                            font.pixelSize: 14 * root.s
+                            color: Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.85)
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: parent.width - 23 * root.s
+                            text: ex.modelData.text
+                            elide: Text.ElideRight
+                            color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurface)
+                            font.family: Theme.fontPrimary
+                            font.pixelSize: 11.5 * root.s
+                        }
+                    }
+                    MouseArea {
+                        id: exArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            input.text = ex.modelData.text;
+                            input.cursorPosition = input.text.length;
+                            input.forceActiveFocus();
+                        }
+                    }
+                }
+            }
+        }
+        Column {
+            width: parent.width
+            spacing: 8 * root.s
+            topPadding: 4 * root.s
+            visible: !Needle.ready
+            Rectangle {
+                width: parent.width
+                height: 36 * root.s
+                radius: 8 * root.s
+                color: setupArea.containsMouse ? Theme.vermLit : Theme.primary
+                Behavior on color { ColorAnimation { duration: Motion.fast } }
+                Row {
+                    anchors.centerIn: parent
+                    spacing: 7 * root.s
+                    MaterialIcon {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "auto_awesome"
+                        font.pixelSize: 15 * root.s
+                        color: Theme.inkOn(Theme.primary, Theme.onPrimary)
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: I18n.tr("Open setup")
+                        color: Theme.inkOn(Theme.primary, Theme.onPrimary)
+                        font.family: Theme.fontPrimary
+                        font.pixelSize: 12 * root.s
+                        font.weight: Font.Medium
+                    }
+                }
+                MouseArea {
+                    id: setupArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: Quickshell.execDetached(["ryoku-shell", "hub", "open", "rashin"])
+                }
+            }
+            Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: I18n.tr("Or add an API key to ~/.config/ryoku/rashin.env")
+                wrapMode: Text.WordWrap
+                color: Theme.inkOn(Theme.effectiveSurface, Theme.outlineVariant, 3.0)
+                font.family: Theme.mono
+                font.pixelSize: 9 * root.s
+            }
         }
     }
 
@@ -1120,7 +1516,7 @@ Item {
                     Behavior on color { ColorAnimation { duration: Motion.fast } }
                     MaterialIcon {
                         anchors.centerIn: parent
-                        text: I18n.tr("add_photo_alternate")
+                        text: "add_photo_alternate"
                         font.pixelSize: 15 * root.s
                         color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurfaceVariant, 3.0)
                     }
@@ -1148,7 +1544,7 @@ Item {
                         background: null
                         padding: 0
                         wrapMode: TextArea.Wrap
-                        placeholderText: "Message the needle"
+                        placeholderText: I18n.tr("Message the needle")
                         placeholderTextColor: Theme.inkOn(Theme.effectiveSurface, Theme.onSurfaceVariant, 3.0)
                         color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurface)
                         selectionColor: Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.35)

@@ -2,7 +2,7 @@ import QtQuick
 import Quickshell
 import Ryoku.Ui.Singletons
 import "../../Singletons"
-import "../../lib/fuzzy.js" as Fuzzy
+import "../../../../../utils/fuzzy.js" as Fuzzy
 import "catalog.js" as Catalog
 import ".."
 
@@ -20,21 +20,11 @@ Provider {
     property string activeCategory: "All"
     onActiveCategoryChanged: Dispatcher.notifyAsync()
 
-    // ryoku-cmd-* helpers are not on PATH; resolve them against scriptsDir. Other
-    // binaries (ryoku-shell, hyprctl, playerctl, sh) are on PATH and pass through.
-    function resolveExec(argv) {
-        if (argv.length > 0 && argv[0].indexOf("ryoku-cmd-") === 0) {
-            var out = argv.slice();
-            out[0] = Config.scriptsDir + argv[0];
-            return out;
-        }
-        return argv;
-    }
 
     function rowFor(entry) {
         return {
             id: "action:" + entry.id,
-            title: entry.name,
+            title: I18n.tr(entry.name),
             subtitle: "",
             icon: "",
             type: entry.category,
@@ -42,15 +32,19 @@ Provider {
             category: entry.category,
             actions: [{
                 id: "run",
-                name: "Run",
+                name: I18n.tr("Run"),
                 icon: "",
-                execute: function () { Spawn.run(actions.resolveExec(entry.exec)); }
+                execute: function () { Spawn.run(entry.exec); }
             }]
         };
     }
 
     function query(text) {
         var pool = Catalog.CATALOG.filter(function (a) {
+            // an action gated on a window-manager capability is dropped on a
+            // compositor that lacks it (its helper is not even installed there).
+            if (a.caps && Wm.caps[a.caps] !== true)
+                return false;
             return actions.activeCategory === "All" || a.category === actions.activeCategory;
         });
         var q = (text || "").trim().toLowerCase();

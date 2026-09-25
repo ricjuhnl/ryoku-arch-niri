@@ -3,8 +3,8 @@
 # helper and stash-cobalt-server.sh's choice of door.
 #
 # Nothing here touches a real daemon, a real socket, or root. Every seam points
-# at a tmp fixture -- RYOKU_DOCKER_BIN, RYOKU_DOCKER_SYSTEMCTL,
-# RYOKU_DOCKER_SOCKET, RYOKU_DOCKER_GETENT for the helper, RYOKU_DOCKER_HELPER
+# at a tmp fixture -- RYOKU_DOCKER_BIN, RYOKU_DOCKER_SYSTEMCTL and
+# RYOKU_DOCKER_SOCKET for the helper, RYOKU_DOCKER_HELPER
 # for the script -- and a fake pkexec on PATH acts as an escalation sentinel.
 #
 # The load-bearing assertions are the NEGATIVE ones: the helper must refuse a
@@ -14,7 +14,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 helper="$here/../system/containers/ryoku-docker"
-server="$here/../ryoku/hyprland/scripts/stash-cobalt-server.sh"
+server="$here/../ryoku/shell/scripts/stash-cobalt-server.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -51,21 +51,6 @@ exit 0
 EOF
 chmod +x "$bin/systemctl"
 
-# The docker group exists and lists whoever is running the suite; passwd resolves
-# that same user. Resolved when the fake runs, not when it is written, because the
-# helper compares against the live `id -un`: hardcoding a name here passes only on
-# the machine that name belongs to, and fails on every CI runner.
-cat >"$bin/getent" <<'EOF'
-#!/bin/sh
-me="$(id -un)"
-case "$1:$2" in
-  group:docker) [ -n "$FIXTURE_NO_GROUP" ] && exit 2; echo "docker:x:940:${FIXTURE_MEMBERS-$me}"; exit 0 ;;
-  passwd:*)     echo "$me:x:$(id -u):$(id -g)::${HOME:-/home/$me}:/bin/bash"; exit 0 ;;
-esac
-exit 2
-EOF
-chmod +x "$bin/getent"
-
 # a real unix socket: the helper requires -S, as /var/run/docker.sock is.
 python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' "$tmp/sock"
 
@@ -73,7 +58,6 @@ export PATH="$bin:$PATH"
 export RYOKU_DOCKER_BIN="$bin/docker"
 export RYOKU_DOCKER_SYSTEMCTL="$bin/systemctl"
 export RYOKU_DOCKER_SOCKET="$tmp/sock"
-export RYOKU_DOCKER_GETENT="$bin/getent"
 
 field() { awk -F'\t' -v k="$1" '$1==k{print $2}'; }
 
@@ -83,16 +67,8 @@ clear_escalated
 out="$($helper state)"
 [[ "$(field binary  <<<"$out")" == yes    ]] || fail "state: binary should be yes"
 [[ "$(field service <<<"$out")" == active ]] || fail "state: service should be active"
-[[ "$(field group   <<<"$out")" == yes    ]] || fail "state: group should be yes"
-[[ "$(field member  <<<"$out")" == yes    ]] || fail "state: member should be yes"
 [[ "$(field socket  <<<"$out")" == yes    ]] || fail "state: socket should be yes"
 escalated && fail "state escalated; it must be read-only"
-
-# membership is read from the group file, not from `id`, because a live session
-# does not see a freshly added group and that is the case this helper exists for.
-clear_escalated
-out="$(FIXTURE_MEMBERS=someone-else $helper state)"
-[[ "$(field member <<<"$out")" == no ]] || fail "state: member should be no when absent from the group line"
 
 rm -f "$tmp/SVC_UP"
 out="$($helper state)"
@@ -104,6 +80,13 @@ clear_escalated
 out="$($helper provision)"
 [[ "$(head -1 <<<"$out" | cut -f1)" == OK ]] || fail "provision: a ready host should report OK, got: $out"
 escalated && fail "provision escalated on an already-provisioned host; it must converge"
+
+# ---- the helper must never grant a session docker access (the Omarchy footgun) -
+# Adding the user to the docker group is passwordless root for every process in
+# their session; the engine reaches docker as root through pkexec instead, so the
+# helper must carry no membership grant of any kind.
+grep -qE 'gpasswd|usermod|adduser|addgroup|groupadd' "$helper" \
+  && fail "the helper touches docker-group membership; that is passwordless root for the session"
 
 # ---- helper: the port policy is enforced BEFORE escalating ------------------
 for p in 0 80 1023 65536 abc " " "9000 x" "9000; id"; do
@@ -173,16 +156,14 @@ out="$("$server" status)"
 [[ "$(field docker <<<"$out")" == ready ]] || fail "status: direct access should report ready, got: $out"
 [[ "$(field cobalt <<<"$out")" == running ]] || fail "status: should report the running container, got: $out"
 
-# helper: `docker info` fails but the helper is present, so the state is the
-# actionable "setup" rather than the dead-end "denied", and the container state
-# is still answerable through the helper.
+# helper-only status must never authenticate. It can report that setup is
+# available, but only a deliberate setup/start action may reach pkexec.
 rm -f "$tmp/DOCKER_UP"
-# The seam stands in for pkexec here: the point of this case is the door the
-# script chooses, not the escalation itself, which the negative tests above
-# already pin.
-out="$(RYOKU_DOCKER_ASSUME_ROOT=1 "$server" status)"
+clear_escalated
+out="$("$server" status)"
 [[ "$(field docker <<<"$out")" == setup ]] || fail "status: with a helper present the state should be setup, got: $out"
-[[ "$(field cobalt <<<"$out")" == running ]] || fail "status: helper door should still report the container, got: $out"
+[[ "$(field cobalt <<<"$out")" == unknown ]] || fail "status: helper-only status must not inspect the container, got: $out"
+escalated && fail "status escalated through pkexec; it must remain read-only"
 
 # none: no helper on PATH and no direct access degrades to denied, and `up` says
 # so instead of pretending.

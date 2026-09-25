@@ -7,18 +7,21 @@ Rectangle {
     id: bar
     property string value: ""
     property int count: 0
+    // optional key -> display label, the same map the Picker overlay takes, so
+    // the closed bar reads "Polski" where the stored value is "pl".
+    property var labels: ({})
     signal opened()
 
     implicitHeight: 26
     radius: Tokens.radius
-    color: bh.hovered ? Tokens.tint10 : "transparent"
+    color: tap.pressed ? Tokens.tint16 : (bh.hovered ? Tokens.tint10 : "transparent")
     border.width: Tokens.border
     border.color: bh.hovered ? Tokens.lineStrong : Tokens.line
     Behavior on color { ColorAnimation { duration: Tokens.snap } }
 
     Text {
         anchors { left: parent.left; leftMargin: 9; verticalCenter: parent.verticalCenter }
-        text: bar.value
+        text: (bar.labels && bar.labels[bar.value] !== undefined) ? bar.labels[bar.value] : I18n.tr(bar.value)
         color: Tokens.ink
         font.family: Tokens.ui
         font.pixelSize: 11
@@ -27,11 +30,13 @@ Rectangle {
     }
     Text {
         anchors { right: parent.right; rightMargin: 9; verticalCenter: parent.verticalCenter }
-        text: bar.count + " ▾"
+        // the chevron is the affordance; how many options the catalogue holds is
+        // not something a reader needs on the row.
+        text: "▾"
         color: Tokens.inkFaint
         font.family: Tokens.mono
         font.pixelSize: 9
     }
     HoverHandler { id: bh; cursorShape: Qt.PointingHandCursor }
-    TapHandler { onTapped: bar.opened() }
+    TapHandler { id: tap; onTapped: bar.opened() }
 }

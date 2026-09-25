@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -12,8 +13,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
+
+	wm "ryoku-wm"
 )
 
 // component is a Quickshell config the daemon keeps alive. Persistent components
@@ -29,6 +33,34 @@ var components = []component{
 	//	launcher, visualizer, widgets, overview), replacing the old
 	// per-surface Quickshell configs. Always-on, as the pill frame was.
 	{"shell", true},
+}
+
+func reloadCoverPath() string {
+	if shellDir != "" {
+		return filepath.Join(shellDir, "scripts", "ryoku-reload-cover")
+	}
+	if exe, err := os.Executable(); err == nil {
+		return filepath.Join(filepath.Dir(exe), "ryoku-reload-cover")
+	}
+	return "ryoku-reload-cover"
+}
+
+var reloadCoverOutput = func(ctx context.Context) ([]byte, error) {
+	return exec.CommandContext(ctx, reloadCoverPath(), "begin").Output()
+}
+
+var reloadCoverBegin = func() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := reloadCoverOutput(ctx)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func beginReloadCover() string {
+	return reloadCoverBegin()
 }
 
 // parseDisabledComponents pulls the "disabledComponents" string array from a
@@ -70,65 +102,71 @@ func componentDisabled(name string) bool {
 }
 
 type daemon struct {
-	mu             sync.Mutex
-	sup            map[string]bool      // components that already have a supervisor goroutine
-	proc           map[string]*exec.Cmd // current live process per component
-	wallMu         sync.Mutex           // serializes the wallpaper hot path (pick + apply)
-	paintSig       chan struct{}        // coalescing wake for the palette/border worker
-	ledsSig        chan struct{}        // coalescing wake for the OpenRGB worker
-	widgetSig      chan struct{}        // coalescing wake for the widget-occupancy gate
-	liveSig        chan struct{}        // coalescing wake for the live-wallpaper fullscreen gate
-	quit           chan struct{}
-	closed         bool
-	ln             net.Listener
-	lock           *os.File // exclusive single-daemon guard, held until exit
-	failMu         sync.Mutex
-	lastFail       map[string]string        // component -> last line it died with
-	voiceMu        sync.Mutex               // serializes voice (Super+`) toggles
-	voiceOn        bool                     // dictation active; guarded by voiceMu
-	prompter       *prompter                // GNOME keyring system prompter (nil when unavailable)
-	monMu          sync.Mutex               // guards activeMon
-	activeMon      string                   // focused monitor, kept warm by watchHyprland
-	monFallback    func() string            // monitor source when the cache is cold; tests swap it
-	gateMu         sync.Mutex               // guards gateWant / gateWake
-	gateWant       map[string]bool          // component -> may run now (absent = yes)
-	gateWake       map[string]chan struct{} // wakes a parked supervisor when its gate opens
-	parkMu         sync.Mutex               // guards hiddenSince
-	hiddenSince    map[string]time.Time     // parkable palette -> when it last went hidden (absent = shown)
-	topicsMu       sync.Mutex               // guards topics
-	topics         map[string]*stateTopic   // subsystem name -> pub/sub state topic
-	callsMu        sync.Mutex               // guards calls
-	calls          map[string]callFunc      // "topic.method" -> control handler
-	clip           *clipState               // clipboard history state (nil until started)
-	tray           *trayState               // system tray watcher/host state (nil until started)
-	wall           *wallSurface             // in-shell desktop wallpaper (nil until started)
-	lastTransition int                      // previous wallpaper transition preset index (-1 = none); guarded by wallMu
-	polkit         *polkitAgent             // PolicyKit1 authentication agent (nil until started)
-	settings       *settingsStore           // shell.json store (nil until startSettings); theme apply patches through it
-	pp             *powerProfilesState      // power-profiles-daemon bus state; nil until startPowerProfiles
-	keypress       *keypressManager         // evdev key stream; opens devices only while the overlay is enabled
+	mu           sync.Mutex
+	sup          map[string]bool      // components that already have a supervisor goroutine
+	proc         map[string]*exec.Cmd // current live process per component
+	paintSig     chan struct{}        // coalescing wake for the palette/border worker
+	stageSig     chan struct{}        // coalescing wake for the unified stage worker
+	stageForce   atomic.Bool          // a pending forced regenerate (effect/quality change, refresh, re-cut)
+	stageGen     atomic.Bool          // a pending enable: reuse an existing cut, else generate
+	stageBusy    atomic.Bool          // a cut/inpaint is in flight (for the status/topic)
+	ledsSig      chan struct{}        // coalescing wake for the OpenRGB worker
+	widgetSig    chan struct{}        // coalescing wake for the widget-occupancy gate
+	quit         chan struct{}
+	closed       bool
+	ln           net.Listener
+	lock         *os.File // exclusive single-daemon guard, held until exit
+	failMu       sync.Mutex
+	lastFail     map[string]string // component -> last line it died with
+	voiceMu      sync.Mutex        // serializes voice (Super+`) toggles
+	voiceOn      bool              // dictation active; guarded by voiceMu
+	voiceStop    chan struct{}     // reaps the live voxtype state stream; nil when none
+	prompter     *prompter         // GNOME keyring system prompter (nil when unavailable)
+	wmc          *wm.Client        // sole path to the compositor
+	wmMu         sync.Mutex        // guards the compositor state the wm watcher keeps warm
+	activeMon    string            // focused output, kept warm by watchWindowManager
+	wmOutputs    []wm.Output
+	wmWorkspaces []wm.Workspace
+	wmWindows    []wm.Window
+	wmKbdLayout  string   // active xkb layout, kept warm by watchWindowManager
+	wmKbdList    []string // configured layouts, in switch order
+	wmOverview   bool     // the compositor's native overview is open (niri)
+	wmReady      bool
+	wmVersions   map[string]int // frame kind -> publishes since daemon start
+	wmTopic      *stateTopic
+	gateMu       sync.Mutex               // guards gateWant / gateWake
+	gateWant     map[string]bool          // component -> may run now (absent = yes)
+	gateWake     map[string]chan struct{} // wakes a parked supervisor when its gate opens
+	parkMu       sync.Mutex               // guards hiddenSince
+	hiddenSince  map[string]time.Time     // parkable palette -> when it last went hidden (absent = shown)
+	topicsMu     sync.Mutex               // guards topics
+	topics       map[string]*stateTopic   // subsystem name -> pub/sub state topic
+	callsMu      sync.Mutex               // guards calls
+	calls        map[string]callFunc      // "topic.method" -> control handler
+	clip         *clipState               // clipboard history state (nil until started)
+	tray         *trayState               // system tray watcher/host state (nil until started)
+	ryoWallMu    sync.Mutex               // guards ryoWall
+	ryoWall      ryogamiFrame             // last wallpaper frame seen from ryogami; feeds the stage worker
+	polkit       *polkitAgent             // PolicyKit1 authentication agent (nil until started)
+	settings     *settingsStore           // shell.json store (nil until startSettings); theme apply patches through it
+	pp           *powerProfilesState      // power-profiles-daemon bus state; nil until startPowerProfiles
+	keypress     *keypressManager         // evdev key stream; opens devices only while the overlay is enabled
 }
 
 func runDaemon() error {
-	// Bind hyprctl and the event watcher to the running compositor before
-	// anything forks or the take-over check reads the signature: a systemd
-	// Restart= can launch us under a stale one (see hyprsig.go).
-	ensureLiveHyprSignature()
+	// The provider (not this daemon) binds to the live compositor. Its opaque
+	// per-session instance handle is the only thing the take-over needs.
+	wmc := wm.Open()
 	path := sockPath()
 	if c, err := net.DialTimeout("unix", path, 300*time.Millisecond); err == nil {
 		c.Close()
-		// A daemon is already listening. Take over only a stale one: an
-		// incumbent left from a previous Hyprland instance, whose
-		// HYPRLAND_INSTANCE_SIGNATURE differs from this session's. A stale
-		// daemon supervises its quickshell children against the dead compositor
-		// socket, so workspaces freeze and monitor-aware commands fail; the fresh
-		// login-time daemon must displace it and rebind to the live session.
-		// A same-session incumbent, an older one that cannot report its
-		// signature, or our own missing signature are left alone, so a genuine
-		// double-start still refuses.
-		mySig := os.Getenv("HYPRLAND_INSTANCE_SIGNATURE")
-		incSig, ok := daemonSignature(path)
-		if !shouldTakeOver(mySig, incSig, ok) {
+		// Take over only a provably stale incumbent: one bound to a different
+		// compositor instance than ours (a previous session's). A same-session
+		// incumbent, an unidentified one (older binary, ok=false), or our own
+		// missing instance are left alone, so a genuine double-start refuses.
+		caps, _ := wmc.Caps()
+		incInstance, ok := daemonSignature(path)
+		if !shouldTakeOver(caps.Instance, incInstance, ok) {
 			return fmt.Errorf("a daemon is already running at %s", path)
 		}
 		quitStaleDaemon(path)
@@ -156,18 +194,18 @@ func runDaemon() error {
 	}
 
 	d := &daemon{
-		sup:            map[string]bool{},
-		proc:           map[string]*exec.Cmd{},
-		paintSig:       make(chan struct{}, 1),
-		ledsSig:        make(chan struct{}, 1),
-		widgetSig:      make(chan struct{}, 1),
-		liveSig:        make(chan struct{}, 1),
-		quit:           make(chan struct{}),
-		gateWant:       map[string]bool{},
-		gateWake:       map[string]chan struct{}{},
-		hiddenSince:    map[string]time.Time{},
-		lastFail:       map[string]string{},
-		lastTransition: -1,
+		sup:         map[string]bool{},
+		proc:        map[string]*exec.Cmd{},
+		paintSig:    make(chan struct{}, 1),
+		stageSig:    make(chan struct{}, 1),
+		ledsSig:     make(chan struct{}, 1),
+		widgetSig:   make(chan struct{}, 1),
+		quit:        make(chan struct{}),
+		gateWant:    map[string]bool{},
+		gateWake:    map[string]chan struct{}{},
+		hiddenSince: map[string]time.Time{},
+		lastFail:    map[string]string{},
+		wmc:         wmc,
 	}
 	d.ln = ln
 	d.lock = lock // held for the process lifetime: closing it would free the guard
@@ -181,6 +219,7 @@ func runDaemon() error {
 
 	setupQmlImportPath()
 
+	go d.runtimeJanitor()
 	d.bootstrap()
 
 	for {
@@ -200,21 +239,20 @@ func runDaemon() error {
 }
 
 // shouldTakeOver reports whether a daemon starting now should displace the
-// incumbent already listening on the control socket. It takes over only a
-// provably stale incumbent: one that reported a Hyprland instance signature
-// (ok) different from this session's (mySig). A same-session incumbent, an
-// unidentified one (an older binary that cannot answer, ok=false), or our own
-// missing signature (mySig=="") all leave the incumbent in place, so a genuine
-// double-start still refuses to run.
+// incumbent on the control socket. It takes over only a provably stale
+// incumbent: one whose compositor instance handle (ok) differs from ours
+// (mySig). A same-session incumbent, an unidentified one (older binary,
+// ok=false), or our own missing handle (mySig=="") leave it in place, so a
+// genuine double-start still refuses.
 func shouldTakeOver(mySig, incSig string, ok bool) bool {
 	return ok && mySig != "" && incSig != mySig
 }
 
-// daemonSignature asks the daemon at path for the Hyprland instance signature it
-// was launched under. ok is false when the query fails or the reply is an error
-// (an older daemon that predates the signature command), so the caller treats
-// the incumbent as unidentified and does not displace it. An empty signature
-// from a current daemon is a valid answer (ok=true, sig="").
+// daemonSignature asks the daemon at path for its compositor instance handle. ok
+// is false when the query fails or the reply is an error (an older daemon that
+// predates the verb), so the caller treats the incumbent as unidentified and
+// does not displace it. An empty handle from a current daemon is a valid answer
+// (ok=true, sig="").
 func daemonSignature(path string) (sig string, ok bool) {
 	conn, err := net.DialTimeout("unix", path, 300*time.Millisecond)
 	if err != nil {
@@ -303,27 +341,28 @@ func (d *daemon) bootstrap() {
 	d.startCalendar()
 	d.startPowerProfiles()
 	d.startNetwork()
+	d.startNightlight()
 	d.startOsd()
 	d.prompter = startKeyringPrompter()
+	if d.prompter != nil {
+		d.prompter.mon = d.activeMonitor
+	}
 	d.startSession()
 	d.startPolkit()
-	d.startWallpaper()
+	d.startUpdates()
 	go d.paintWorker()
+	d.startStage()
+	go d.watchRyogami()
 	go d.watchMatugenKnobs()
 	go d.ledsWorker()
-	go d.watchHyprland()
+	d.startWM()
 	go d.watchAudio()
 	go d.watchPowerSounds()
 	go d.watchAutoPowerSaver()
 	go d.widgetGateWorker()
 	go d.idlePark()
-	go func() {
-		d.wallMu.Lock()
-		defer d.wallMu.Unlock()
-		d.wallInit()
-	}()
+	d.startSleepWake()
 	go d.startComponents()
-	go d.liveGateWorker()
 }
 
 // holdDaemonLock takes the exclusive single-daemon lock, retrying briefly: a
@@ -584,6 +623,21 @@ func tailLine(path string) string {
 	return ""
 }
 
+// tailLines returns the last n lines of the file joined by newlines, or "" if it
+// cannot be read. Used to attach a dying surface's output to a crash log without
+// copying the whole file.
+func tailLines(path string, n int) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
+
 // supervise runs `qs -c <name>` and restarts it whenever it exits, backing off if
 // it dies immediately so a broken config does not spin the CPU.
 func (d *daemon) supervise(name string) {
@@ -630,14 +684,36 @@ func (d *daemon) supervise(name string) {
 		if parkable(name) {
 			d.markHidden(name)
 		}
+		exited := make(chan struct{})
+		if name == "shell" {
+			// A shell that stays up past its crash window is the desktop coming
+			// back after a boot; record it for the boot guard (ryoku boot-guard),
+			// which reverts an update whose next boots never get here.
+			go recordBootOK(exited)
+		}
 
 		start := time.Now()
 		_ = cmd.Wait()
+		close(exited)
 		if name == "shell" && d.keypress != nil {
 			d.keypress.configure(false, d.keypress.currentMode())
 		}
 		if logFile != nil {
 			logFile.Close()
+		}
+		if name == "shell" {
+			// On the shell going down, attach the reason so the next crash
+			// report from a user carries it: the exit status, the signal that
+			// killed it, and the tail of what the surface printed before it went.
+			signal := "none"
+			if ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+				signal = ws.Signal().String()
+			}
+			fmt.Fprintf(os.Stderr, "shell exited: %s (signal: %s)\n",
+				cmd.ProcessState.String(), signal)
+			if tail := tailLines(logPath, 20); tail != "" {
+				fmt.Fprintf(os.Stderr, "shell stderr tail:\n%s\n", tail)
+			}
 		}
 
 		d.mu.Lock()
@@ -804,19 +880,31 @@ func (d *daemon) handle(conn net.Conn) {
 }
 
 var surfaceCommands = map[string]string{
-	"menu screenshot": "screenshot",
-	"menu stash":      "stash",
-	// ryoku: launcher/overview/visualizer are toggled in-process
-	// by the shell's own global:ryoku:* keybinds (CustomShortcut -> ShellState),
-	// not by the daemon. These CLI verbs stay mapped to the closest openSurface
-	// call on the shell target, but the shell's surface bus does not route these
-	// ids yet, so they are no-ops pending the retire phase (wire the ids there, or
-	// drop the dead verbs). Do NOT invent a shell IPC function for them.
-	"menu app-launcher":  "launcher",
+	// One bare kebab verb per shell surface, spelled to match its CustomShortcut
+	// id, so a compositor keybind reaches any surface as `ryoku-shell <id>` where
+	// no global-shortcuts protocol exists (niri). Flag surfaces land on ShellState
+	// through the surface bus's style-independent consumer; frame-menu surfaces
+	// land on the per-monitor FrameMenuManager. Both are the same transition a
+	// CustomShortcut press runs in-process.
+	"bar-toggle":         "barToggle",
 	"launcher":           "launcher",
 	"overview":           "overview",
 	"visualizer":         "visualizer",
 	"visualizer-overlay": "visualizer-overlay",
+	"visualizer-place":   "visualizer-place",
+	"quicksettings":      "quick-settings",
+	"wallpaper-menu":     "wallpaper",
+	"clipboard":          "clipboard",
+	"stash":              "stash",
+	"screenshot":         "quick-settings#capture",
+	"compress":           "stash#compress",
+	"install":            "stash#install",
+	// Preserved aliases so nothing scripted today breaks: the menu-prefixed
+	// spellings and the file-picker desktop entries (install-app.desktop,
+	// compress-video.desktop) land on the same surfaces they always have.
+	"menu screenshot":   "screenshot",
+	"menu stash":        "stash",
+	"menu app-launcher": "launcher",
 }
 
 // route resolves an IPC-style command to the single shell's IpcHandler config,
@@ -870,12 +958,20 @@ func (d *daemon) dispatch(line string) string {
 			routeCmd = line
 		}
 	case "bar":
+		// The data-layout verbs (list/catalog/move/show/hide/set/position/form/
+		// defaults/settings) take a verb first; the reveal grammar takes an edge
+		// first, so the first word disambiguates the two without collision.
+		if len(args) >= 1 && barCLIVerbs[args[0]] {
+			return d.barCLI(args)
+		}
 		// bar <edge|all> <toggle|reveal|hide> drives the bar reveal state.
 		edge, action, ok := parseBarEdge(args)
 		if !ok {
-			return "err bar: expected <top|bottom|left|right|all> <toggle|reveal|hide>"
+			return "err bar: expected <top|bottom|left|right|all> <toggle|reveal|hide>, or a widget verb (list|catalog|move|show|hide|set|position|form|defaults|settings)"
 		}
 		return d.barToggle(edge, action)
+	case "dock":
+		return d.dockCLI(args)
 	}
 	if config, target, fn, ok := route(routeCmd); ok {
 		if componentDisabled(config) {
@@ -947,31 +1043,81 @@ func (d *daemon) dispatch(line string) string {
 			return d.hub(args[0], args[1])
 		}
 		return "err hub: expected open [section] or close"
-	case "wallpaper-switcher":
-		// spawn the picker as a one-shot modal (like ryoshot or the hub), not a
-		// resident surface: it shows on launch and quits on close, so it holds no
-		// memory while idle. flock keeps a second press from stacking a duplicate;
-		// the goroutine reaps qs when it exits.
-		go func() {
-			_ = exec.Command("flock", append([]string{"-n", "-o", "/tmp/ryoku-wallpaper.lock", "qs"}, qsSelect("wallpaper")...)...).Run()
-		}()
-		return "ok"
-	case "wallpaper":
-		mode := "next"
-		arg := ""
-		if len(args) > 0 {
-			mode = args[0]
+	case "stage":
+		// One verb surface for Ryostage (docs/stage.md): set-effect records the
+		// three-way effect per wallpaper; set-layer applies a layer's arrangement
+		// flags (enabled/front/depth); add-layer / cut-layer / remove-layer manage
+		// the manual layers; refresh forces a re-cut; cancel kills a running engine
+		// child; clear drops the current wall's generated artifacts; status
+		// snapshots the topic; models proxies the engine catalogue. QML normally
+		// subscribes to the `stage` topic; these verbs carry intent the other way.
+		if len(args) == 0 {
+			return "err stage: expected a verb"
 		}
-		if mode == "set" && len(args) > 1 {
-			arg = args[1]
+		// Trailing path / json arguments may contain spaces, so recover them from
+		// the raw line by fixed-field split instead of the whitespace args, which
+		// would truncate at the first space.
+		switch args[0] {
+		case "set-effect":
+			if len(args) < 2 {
+				return "err stage set-effect: expected off|depth|parallax"
+			}
+			eff := stageEffect(args[1])
+			if eff != stageEffectOff && eff != stageEffectDepth && eff != stageEffectParallax {
+				return "err stage set-effect: expected off|depth|parallax"
+			}
+			d.stageSetEffect(eff)
+			return "ok"
+		case "refresh":
+			d.stageForce.Store(true)
+			d.scheduleStage()
+			return "ok"
+		case "cancel":
+			stageCancel()
+			return "ok"
+		case "status":
+			return d.stageStatusJSON()
+		case "models":
+			return stageModelsJSON()
+		case "cut-layer":
+			if len(args) < 2 {
+				return "err stage cut-layer: expected a path"
+			}
+			path, err := d.stageCutLayer(restField(line, 3))
+			if err != nil {
+				return "err stage cut-layer: " + err.Error()
+			}
+			return "ok " + path
+		case "set-layer":
+			if len(args) < 3 {
+				return "err stage set-layer: expected <index> <json>"
+			}
+			if err := d.stageSetLayer(args[1], restField(line, 4)); err != nil {
+				return "err stage set-layer: " + err.Error()
+			}
+			return "ok"
+		case "add-layer":
+			if len(args) < 2 {
+				return "err stage add-layer: expected a path"
+			}
+			path, err := d.stageAddLayer(restField(line, 3))
+			if err != nil {
+				return "err stage add-layer: " + err.Error()
+			}
+			return "ok " + path
+		case "remove-layer":
+			if len(args) < 2 {
+				return "err stage remove-layer: expected an index"
+			}
+			if err := d.stageRemoveLayer(args[1]); err != nil {
+				return "err stage remove-layer: " + err.Error()
+			}
+			return "ok"
+		case "clear":
+			d.stageClear()
+			return "ok"
 		}
-		d.wallMu.Lock()
-		err := d.wallpaperApply(mode, arg)
-		d.wallMu.Unlock()
-		if err != nil {
-			return "err wallpaper: " + err.Error()
-		}
-		return "ok"
+		return "err stage: unknown verb " + args[0]
 	case "theme":
 		// Apply a colour scheme by writing theme.theme through the settings store
 		// (the sole writer of shell.json), which validates the name, persists,
@@ -981,6 +1127,23 @@ func (d *daemon) dispatch(line string) string {
 		if len(args) == 0 {
 			return "err theme: expected a scheme name (or `catalog`)"
 		}
+		if args[0] == "remove" && len(args) >= 2 {
+			// `theme remove <id>` uninstalls a downloaded scheme. Reset the
+			// applied scheme to the Ryoku default first when it is the one being
+			// removed, so the desktop never keeps a scheme whose files are gone;
+			// the settings store drives the retheme off that write.
+			id := strings.Join(args[1:], " ")
+			if d.settings != nil && d.settings.themeName() == id {
+				def, _ := json.Marshal("Default")
+				if err := d.settings.patch("theme.theme", def); err != nil {
+					return "err theme: " + err.Error()
+				}
+			}
+			if err := removeUserTheme(id); err != nil {
+				return "err theme: " + err.Error()
+			}
+			return "ok"
+		}
 		if d.settings == nil {
 			return "err theme: settings not ready"
 		}
@@ -989,6 +1152,20 @@ func (d *daemon) dispatch(line string) string {
 			return "err theme: " + err.Error()
 		}
 		return "ok"
+	case "gtk":
+		// A curated light/dark scheme is owned by the Hub: it writes colors.json
+		// itself, so the paint worker idles and nothing here would land the
+		// desktop's GTK settings for the new mode. The Hub calls this instead of
+		// setting gsettings on its own, which keeps one writer for gtk-theme,
+		// color-scheme and accent-color rather than two that can disagree.
+		if len(args) != 2 || args[0] != "apply" {
+			return "err gtk: expected `apply <light|dark>`"
+		}
+		if args[1] != "light" && args[1] != "dark" {
+			return "err gtk: mode must be light or dark"
+		}
+		matugenReload(args[1])
+		return "ok"
 	case "reload":
 		return d.reload()
 	case "status":
@@ -996,10 +1173,11 @@ func (d *daemon) dispatch(line string) string {
 	case "ping":
 		return "ok"
 	case "signature":
-		// The Hyprland instance this daemon was launched under. A newly starting
-		// daemon reads it to tell a stale incumbent (a previous session's) from
-		// a same-session double-start before it takes over the control socket.
-		return os.Getenv("HYPRLAND_INSTANCE_SIGNATURE")
+		// Opaque per-session instance handle from the provider, string-compared
+		// to tell a stale incumbent from a same-session double-start. Empty means
+		// no live session.
+		caps, _ := d.wmc.Caps()
+		return caps.Instance
 	case "quit":
 		d.signalQuit()
 		return "ok"
@@ -1049,6 +1227,11 @@ func (d *daemon) dispatch(line string) string {
 // just flashes an "off" note on the pill. Tap-to-toggle rides only the key-press
 // edge: Hyprland won't deliver a release once the modifier lifts first, which
 // would otherwise leave a hold-to-talk recording stuck on.
+//
+// Dictation can also end without a tap (Voxtype stops on silence or finishes
+// transcribing), so the ON edge starts a state watcher that closes the surface
+// when Voxtype reports idle (#244). The watcher is spawned before `record
+// start` so it cannot miss the transition into recording.
 func (d *daemon) voice() string {
 	d.voiceMu.Lock()
 	defer d.voiceMu.Unlock()
@@ -1060,8 +1243,15 @@ func (d *daemon) voice() string {
 	d.voiceOn = !d.voiceOn
 	if d.voiceOn {
 		d.ensure("shell")
+		stop := make(chan struct{})
+		d.voiceStop = stop
+		go d.watchVoice(stop)
 		voxtypeRecord("start")
 		return shellIpc("openSurface", d.activeMonitor(), "voice")
+	}
+	if d.voiceStop != nil {
+		close(d.voiceStop)
+		d.voiceStop = nil
 	}
 	voxtypeRecord("stop")
 	return shellIpc("closeSurface", d.activeMonitor(), "voice")
@@ -1072,6 +1262,7 @@ func (d *daemon) voice() string {
 // on the same error is what made `ryoku reload` look like it does nothing on a
 // black screen.
 func (d *daemon) reload() string {
+	_ = beginReloadCover()
 	d.mu.Lock()
 	was := make(map[string]int, len(d.proc))
 	procs := make([]*exec.Cmd, 0, len(d.proc))

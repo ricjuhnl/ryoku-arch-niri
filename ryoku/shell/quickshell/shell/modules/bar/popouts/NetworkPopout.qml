@@ -4,6 +4,7 @@ import QtQuick
 import ".."
 import shell.services
 import "../../../components"
+import Ryoku.Ui.Singletons
 
 // Network popout: a frame-edge card (shared PopoutCard, so it opens and melts
 // like the music card) leading with the current link (wired or the joined
@@ -17,6 +18,51 @@ Item {
 
     property real s: 1
     property bool open: false
+
+    // a hidden network has no scanned AP, so it joins through the daemon intent
+    // with 802-11-wireless.hidden set; these drive the inline join card.
+    property bool hiddenOpen: false
+    property string hiddenSsid: ""
+    property string hiddenPassword: ""
+    property int hiddenPendingId: -1
+    property bool hiddenConnecting: false
+    property bool hiddenError: false
+
+    function openHidden() {
+        root.hiddenOpen = true;
+        root.hiddenError = false;
+        Qt.callLater(function() { if (hiddenSsidField.visible) hiddenSsidField.forceActiveFocus(); });
+    }
+    function cancelHidden() {
+        root.hiddenOpen = false;
+        root.hiddenConnecting = false;
+        root.hiddenPendingId = -1;
+        root.hiddenSsid = "";
+        root.hiddenPassword = "";
+        root.hiddenError = false;
+    }
+    function submitHidden() {
+        if (root.hiddenSsid === "" || root.hiddenConnecting)
+            return;
+        root.hiddenError = false;
+        root.hiddenConnecting = true;
+        root.hiddenPendingId = Network.connectWifi(root.hiddenSsid, root.hiddenPassword, "", true);
+    }
+    Connections {
+        target: Network
+        function onReplied(id, ok, error) {
+            if (id !== root.hiddenPendingId)
+                return;
+            root.hiddenConnecting = false;
+            root.hiddenPendingId = -1;
+            if (ok)
+                root.cancelHidden();
+            else {
+                root.hiddenError = true;
+                root.hiddenPassword = "";
+            }
+        }
+    }
 
     readonly property real pad: 11 * root.s
     readonly property color ink: Theme.ink(Theme.effectiveSurface)
@@ -160,9 +206,11 @@ Item {
             Rectangle {
                 anchors.fill: parent
                 radius: 3 * root.s
-                color: apHover.hovered ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.08) : "transparent"
+                color: apTap.pressed ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.16)
+                    : (apHover.hovered ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.08) : "transparent")
                 border.width: Theme.borderWidth
                 border.color: root.line
+                Behavior on color { ColorAnimation { duration: Motion.fast } }
             }
             GlyphIcon {
                 id: apIcon
@@ -213,7 +261,7 @@ Item {
                 }
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: apr.connecting ? qsTr("…") : Math.round(apr.ap.strength || 0) + "%"
+                    text: apr.connecting ? "…" : Math.round(apr.ap.strength || 0) + "%"
                     color: root.inkDim
                     font.family: Theme.mono
                     font.pixelSize: 9.5 * root.s
@@ -221,6 +269,7 @@ Item {
             }
             HoverHandler { id: apHover; cursorShape: Qt.PointingHandCursor }
             MouseArea {
+                id: apTap
                 anchors.fill: parent
                 onClicked: {
                     if (apr.needsPw) {
@@ -263,7 +312,7 @@ Item {
                     Text {
                         anchors.fill: parent
                         verticalAlignment: Text.AlignVCenter
-                        text: qsTr("Password")
+                        text: I18n.tr("Password")
                         color: root.inkDim
                         font: pwField.font
                         visible: pwField.text.length === 0 && !pwField.activeFocus
@@ -286,7 +335,7 @@ Item {
             Text {
                 width: parent.width
                 visible: apr.errorShown
-                text: qsTr("Wrong password or connection failed")
+                text: I18n.tr("Wrong password or connection failed")
                 color: Theme.error
                 wrapMode: Text.WordWrap
                 font.family: Theme.fontPrimary
@@ -296,7 +345,7 @@ Item {
                 width: parent.width
                 s: root.s
                 enabled: !apr.connecting
-                label: apr.connecting ? qsTr("Connecting…") : qsTr("Connect")
+                label: apr.connecting ? I18n.tr("Connecting…") : I18n.tr("Connect")
                 onClicked: apr.doConnect()
             }
         }
@@ -317,7 +366,7 @@ Item {
             Text {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                text: qsTr("NETWORK")
+                text: I18n.tr("NETWORK")
                 color: root.inkDim
                 font.family: Theme.mono
                 font.pixelSize: 9 * root.s
@@ -364,7 +413,7 @@ Item {
             Text {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
-                text: qsTr("Wi-Fi is off")
+                text: I18n.tr("Wi-Fi is off")
                 color: root.ink
                 font.family: Theme.fontPrimary
                 font.pixelSize: 12 * root.s
@@ -373,7 +422,7 @@ Item {
             PopoutAction {
                 anchors.horizontalCenter: parent.horizontalCenter
                 s: root.s
-                label: qsTr("Turn on")
+                label: I18n.tr("Turn on")
                 onClicked: root.toggleWifi()
             }
         }
@@ -409,7 +458,7 @@ Item {
                 visible: root.wifiUp
                 s: root.s
                 destructive: true
-                label: qsTr("Disconnect")
+                label: I18n.tr("Disconnect")
                 onClicked: Network.disconnectWifi()
             }
             Column {
@@ -421,9 +470,9 @@ Item {
                 spacing: 1 * root.s
                 Text {
                     width: parent.width
-                    text: root.wiredUp ? qsTr("Wired")
+                    text: root.wiredUp ? I18n.tr("Wired")
                         : root.wifiUp ? root.activeSsid
-                        : qsTr("Not connected")
+                        : I18n.tr("Not connected")
                     color: root.ink
                     font.family: Theme.fontPrimary
                     font.pixelSize: 12.5 * root.s
@@ -433,13 +482,13 @@ Item {
                 Text {
                     width: parent.width
                     text: {
-                        if (root.wiredUp) return qsTr("Connected");
+                        if (root.wiredUp) return I18n.tr("Connected");
                         if (root.wifiUp) {
                             const s = Math.round(Network.wifi.strength || 0);
-                            const base = qsTr("Connected · %1%").arg(s);
+                            const base = I18n.tr("Connected · %1%").arg(s);
                             return Network.vpnActive ? base + " · " + Network.vpnName : base;
                         }
-                        return Network.wifiConnectivity === "Connecting" ? qsTr("Connecting…") : qsTr("Choose a network");
+                        return Network.wifiConnectivity === "Connecting" ? I18n.tr("Connecting…") : I18n.tr("Choose a network");
                     }
                     color: root.inkDim
                     font.family: Theme.mono
@@ -453,7 +502,7 @@ Item {
         Text {
             width: parent.width
             visible: root.wifiOn
-            text: root.scanning ? qsTr("NETWORKS · SCANNING") : qsTr("NETWORKS")
+            text: root.scanning ? I18n.tr("NETWORKS · SCANNING") : I18n.tr("NETWORKS")
             color: root.inkDim
             font.family: Theme.mono
             font.pixelSize: 8.5 * root.s
@@ -475,11 +524,113 @@ Item {
             width: parent.width
             visible: root.wifiOn && root.availableNets.length === 0
             horizontalAlignment: Text.AlignHCenter
-            text: root.scanning ? qsTr("Scanning…") : qsTr("No networks found")
+            text: root.scanning ? I18n.tr("Scanning…") : I18n.tr("No networks found")
             color: root.inkDim
             font.family: Theme.fontPrimary
             font.pixelSize: 10 * root.s
             topPadding: 2 * root.s
+        }
+        Text {
+            width: parent.width
+            visible: root.wifiOn && !root.hiddenOpen
+            horizontalAlignment: Text.AlignHCenter
+            topPadding: 4 * root.s
+            text: I18n.tr("Connect to a hidden network")
+            color: hiddenLinkHover.hovered ? root.ink : root.inkDim
+            font.family: Theme.fontPrimary
+            font.pixelSize: 10 * root.s
+            Behavior on color { ColorAnimation { duration: 120 } }
+            HoverHandler { id: hiddenLinkHover }
+            TapHandler { onTapped: root.openHidden() }
+        }
+        Column {
+            width: parent.width
+            spacing: 4 * root.s
+            visible: root.wifiOn && root.hiddenOpen
+
+            Rectangle {
+                width: parent.width
+                height: 26 * root.s
+                radius: 3 * root.s
+                color: "transparent"
+                border.width: Theme.borderWidth
+                border.color: root.line
+                TextInput {
+                    id: hiddenSsidField
+                    anchors.fill: parent
+                    anchors.leftMargin: 8 * root.s
+                    anchors.rightMargin: 8 * root.s
+                    verticalAlignment: TextInput.AlignVCenter
+                    color: root.ink
+                    font.family: Theme.fontPrimary
+                    font.pixelSize: 11 * root.s
+                    clip: true
+                    text: root.hiddenSsid
+                    onTextChanged: { root.hiddenSsid = text; root.hiddenError = false; }
+                    Keys.onPressed: function(event) { if (event.key === Qt.Key_Escape) { root.cancelHidden(); event.accepted = true; } }
+                    Text {
+                        anchors.fill: parent
+                        verticalAlignment: Text.AlignVCenter
+                        text: I18n.tr("Network name (SSID)")
+                        color: root.inkDim
+                        font: hiddenSsidField.font
+                        visible: hiddenSsidField.text.length === 0 && !hiddenSsidField.activeFocus
+                    }
+                }
+            }
+            Rectangle {
+                width: parent.width
+                height: 26 * root.s
+                radius: 3 * root.s
+                color: "transparent"
+                border.width: Theme.borderWidth
+                border.color: root.line
+                TextInput {
+                    anchors.fill: parent
+                    anchors.leftMargin: 8 * root.s
+                    anchors.rightMargin: 8 * root.s
+                    verticalAlignment: TextInput.AlignVCenter
+                    color: root.ink
+                    font.family: Theme.fontPrimary
+                    font.pixelSize: 11 * root.s
+                    echoMode: TextInput.Password
+                    clip: true
+                    text: root.hiddenPassword
+                    onTextChanged: { root.hiddenPassword = text; root.hiddenError = false; }
+                    onAccepted: root.submitHidden()
+                    Keys.onPressed: function(event) { if (event.key === Qt.Key_Escape) { root.cancelHidden(); event.accepted = true; } }
+                    Text {
+                        anchors.fill: parent
+                        verticalAlignment: Text.AlignVCenter
+                        text: I18n.tr("Password (leave empty if open)")
+                        color: root.inkDim
+                        font: parent.font
+                        visible: parent.text.length === 0 && !parent.activeFocus
+                    }
+                }
+            }
+            Text {
+                width: parent.width
+                visible: root.hiddenError
+                text: I18n.tr("Wrong password or connection failed")
+                color: Theme.error
+                wrapMode: Text.WordWrap
+                font.family: Theme.fontPrimary
+                font.pixelSize: 9.5 * root.s
+            }
+            PopoutAction {
+                width: parent.width
+                s: root.s
+                enabled: root.hiddenSsid !== "" && !root.hiddenConnecting
+                label: root.hiddenConnecting ? I18n.tr("Connecting…") : I18n.tr("Connect")
+                onClicked: root.submitHidden()
+            }
+            PopoutAction {
+                width: parent.width
+                s: root.s
+                label: I18n.tr("Cancel")
+                onClicked: root.cancelHidden()
+            }
         }
     }
 }

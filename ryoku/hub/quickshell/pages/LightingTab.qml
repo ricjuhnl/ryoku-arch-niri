@@ -177,7 +177,7 @@ Item {
         Text {
             id: chipLabel
             anchors.centerIn: parent
-            text: chip.label
+            text: I18n.tr(chip.label)
             color: chip.on ? Tokens.inkOnBone : Tokens.ink
             font.family: Tokens.ui; font.pixelSize: Tokens.fMicro
             font.weight: Font.Medium; font.letterSpacing: Tokens.trackLabel
@@ -263,7 +263,7 @@ Item {
                     model: card.dev.effects || []
                     delegate: Chip {
                         required property var modelData
-                        label: modelData.label
+                        label: I18n.tr(modelData.label)
                         on: card.dev.effect === modelData.id
                         onPicked: lt.patch(card.devKey, { "effect": modelData.id })
                     }
@@ -278,7 +278,7 @@ Item {
             divider: true
             block: true
             label: I18n.tr("This device's effects")
-            desc: I18n.tr("Run by the device itself, so they keep going with Ryoku closed. A device does not always implement every effect it lists; if one does nothing, that is its firmware, and a Ryoku effect above will work instead.")
+            desc: I18n.tr("Run by the device itself, so they keep going with Ryoku closed. An effect that does nothing is its firmware; a Ryoku effect above will work instead.")
             Flow {
                 anchors.left: parent.left; anchors.right: parent.right
                 spacing: Tokens.s2
@@ -469,6 +469,7 @@ Item {
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+        WheelScroll { }
 
         Column {
             id: col

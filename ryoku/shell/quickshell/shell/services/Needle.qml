@@ -24,6 +24,16 @@ Singleton {
     // Session model picker: the models hermes offers, and the current one.
     property var models: []
     property string currentModel: ""
+    // The active chat backend's display name (Hermes, Oh My Pi, ...), shown on
+    // the chip when the agent advertises no model, so it never shows a stale one.
+    property string currentAgent: ""
+    // All chat-capable agents (id, name, available, recommended, active) for the
+    // "what's answering" picker; switching agent is a live backend change.
+    property var backends: []
+    // Whether the needle can actually answer (agent configured or a direct
+    // provider resolves). Starts true so a working box never flashes the
+    // first-run setup prompt while status loads.
+    property bool ready: true
 
     // Emitted whenever the transcript changes so the view can scroll to end.
     signal touched()
@@ -33,6 +43,8 @@ Singleton {
             root.newChat();
         root.lastSeen = Date.now();
         root.loadModels();
+        root.loadReady();
+        root.loadBackends();
     }
 
     function noteClosed() {
@@ -57,7 +69,7 @@ Singleton {
         if ((q.length === 0 && imgs.length === 0) || root.busy)
             return;
         messages.append({ who: "user", body: q, imagesJson: JSON.stringify(imgs),
-            working: "", streaming: false, failed: false, activityJson: "[]" });
+            working: "", streaming: false, failed: false, activityJson: "[]", permJson: "" });
         root._run(q, imgs);
     }
 
@@ -84,7 +96,7 @@ Singleton {
     // Append the agent bubble and start the turn (shared by send + regenerate).
     function _run(q, imgs) {
         messages.append({ who: "agent", body: "", imagesJson: "[]",
-            working: "waking the needle", streaming: true, failed: false, activityJson: "[]" });
+            working: I18n.tr("waking the needle"), streaming: true, failed: false, activityJson: "[]", permJson: "" });
         root.liveIdx = messages.count - 1;
         root.busy = true;
         root.lastSeen = Date.now();
@@ -108,7 +120,7 @@ Singleton {
             messages.setProperty(root.liveIdx, "streaming", false);
             if (messages.get(root.liveIdx).body.length === 0) {
                 messages.setProperty(root.liveIdx, "failed", true);
-                messages.setProperty(root.liveIdx, "body", "cancelled");
+                messages.setProperty(root.liveIdx, "body", I18n.tr("cancelled"));
             }
         }
         root.busy = false;
@@ -125,12 +137,41 @@ Singleton {
     }
 
     function loadModels() { modelsProc.running = true; }
+    function loadReady() { readyProc.running = true; }
+    function loadBackends() { backendsProc.running = true; }
+
+    // Switch the chat backend (agent) live: the daemon drops its session so the
+    // next turn runs the chosen agent. Reflect the pick at once; the turn's
+    // models event then confirms the model (or none) the agent exposes.
+    function setBackend(id) {
+        if (!id)
+            return;
+        for (var i = 0; i < root.backends.length; i++)
+            if (root.backends[i].id === id)
+                root.currentAgent = String(root.backends[i].name || id);
+        root.currentModel = "";
+        root.models = [];
+        Quickshell.execDetached(["ryoku-rashin", "agent", "use", String(id)]);
+        backendsReload.restart();
+    }
 
     function setModel(id) {
         if (!id || id === root.currentModel)
             return;
         root.currentModel = String(id);
         Quickshell.execDetached(["ryoku-rashin", "chat", "--set-model", String(id)]);
+    }
+
+    // Answer the approval hermes is waiting on; an empty option declines it.
+    function answerPermission(optionId) {
+        var i = root.liveIdx;
+        if (i < 0 || i >= messages.count || messages.get(i).permJson.length === 0)
+            return;
+        var req;
+        try { req = JSON.parse(messages.get(i).permJson); } catch (e) { return; }
+        messages.setProperty(i, "permJson", "");
+        messages.setProperty(i, "working", optionId ? I18n.tr("approved, continuing") : I18n.tr("declined"));
+        Quickshell.execDetached(["ryoku-rashin", "chat", "--perm", String(req.id), String(optionId || "")]);
     }
 
     // Append or update (tools are keyed by id) an activity item on message i.
@@ -211,19 +252,21 @@ Singleton {
                     root.touched();
                     break;
                 case "perm":
-                    messages.setProperty(i, "working", "waiting for approval: " + String(f.title || ""));
+                    messages.setProperty(i, "working", I18n.tr("waiting for approval: %1").arg(String(f.title || "")));
+                    messages.setProperty(i, "permJson", JSON.stringify({ id: String(f.requestId || ""), title: String(f.title || ""), options: f.options || [] }));
+                    root.touched();
                     break;
                 case "models":
                     root.models = f.models || [];
-                    if (f.current)
-                        root.currentModel = String(f.current);
+                    root.currentModel = f.current ? String(f.current) : "";
+                    root.currentAgent = f.agent ? String(f.agent) : "";
                     break;
                 case "done":
                     var imgs = f.images || [];
                     if (imgs.length > 0)
                         messages.setProperty(i, "imagesJson", JSON.stringify(imgs));
                     if (messages.get(i).body.length === 0 && imgs.length === 0) {
-                        messages.setProperty(i, "body", "(no response)");
+                        messages.setProperty(i, "body", I18n.tr("(no response)"));
                         messages.setProperty(i, "failed", true);
                     }
                     root._finishActivity(i);
@@ -236,7 +279,7 @@ Singleton {
                     break;
                 case "error":
                     if (messages.get(i).body.length === 0)
-                        messages.setProperty(i, "body", String(f.message || "failed"));
+                        messages.setProperty(i, "body", String(f.message || I18n.tr("failed")));
                     messages.setProperty(i, "failed", true);
                     messages.setProperty(i, "working", "");
                     messages.setProperty(i, "streaming", false);
@@ -254,7 +297,7 @@ Singleton {
                 messages.setProperty(root.liveIdx, "streaming", false);
                 if (messages.get(root.liveIdx).body.length === 0) {
                     messages.setProperty(root.liveIdx, "failed", true);
-                    messages.setProperty(root.liveIdx, "body", code === 0 ? "no answer" : "chat failed");
+                    messages.setProperty(root.liveIdx, "body", code === 0 ? I18n.tr("no answer") : I18n.tr("chat failed"));
                 }
             }
             root.busy = false;
@@ -274,10 +317,47 @@ Singleton {
                 try { f = JSON.parse(String(line)); } catch (e) { return; }
                 if (f && f.type === "models") {
                     root.models = f.models || [];
-                    if (f.current) root.currentModel = String(f.current);
+                    root.currentModel = f.current ? String(f.current) : "";
+                    root.currentAgent = f.agent ? String(f.agent) : "";
                 }
             }
         }
+    }
+
+    Process {
+        id: readyProc
+        command: ["ryoku-rashin", "status", "--json"]
+        stdout: SplitParser {
+            splitMarker: "\n"
+            onRead: (line) => {
+                var f;
+                try { f = JSON.parse(String(line)); } catch (e) { return; }
+                if (f && typeof f.ready === "boolean")
+                    root.ready = f.ready;
+            }
+        }
+    }
+
+    Process {
+        id: backendsProc
+        command: ["ryoku-rashin", "agent", "--json"]
+        stdout: SplitParser {
+            splitMarker: "\n"
+            onRead: (line) => {
+                var arr;
+                try { arr = JSON.parse(String(line)); } catch (e) { return; }
+                if (Array.isArray(arr))
+                    root.backends = arr;
+            }
+        }
+    }
+
+    // After a live switch the config lands a moment later; refresh the active
+    // marker in the picker once it has settled.
+    Timer {
+        id: backendsReload
+        interval: 300
+        onTriggered: root.loadBackends()
     }
 
     // Restore the conversation the persistent daemon session still holds, so a
@@ -296,7 +376,7 @@ Singleton {
                 for (var i = 0; i < f.messages.length; i++) {
                     var m = f.messages[i];
                     messages.append({ who: String(m.who), body: String(m.body),
-                        imagesJson: "[]", working: "", streaming: false, failed: false, activityJson: "[]" });
+                        imagesJson: "[]", working: "", streaming: false, failed: false, activityJson: "[]", permJson: "" });
                 }
                 root.touched();
             }

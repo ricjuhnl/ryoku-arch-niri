@@ -27,12 +27,25 @@ truth for the live desktop.
   `monitors.lua` are hardware-managed seeds, and `monitors_user.lua.example` shows
   how to hand-pin a display that autoscale must leave alone. `modules/` is one concern per file
   (`env`, `input`, `displays`, `decoration`, `animations`, `binds`, `ryoshot`,
-  `window_rules`, `fullscreen`, `autostart`). `scripts/` holds the leaf shell helpers the UI
-  calls directly: the `ryoku-cmd-*` screen tools (lens, OCR, color, QR, webcam
-  mirror, screen record, night light, caffeine) plus the stash sidebar's
-  download, compress, and install helpers and `ryoku-sysinfo`. `hypridle.conf`
-  is the idle daemon's native config. The whole
-  directory deploys to `~/.config/hypr/`.
+  `window_rules`, `fullscreen`, `autostart`). `scripts/` holds Hyprland's own
+  leaf helpers, the ones bound to the compositor: `ryoku-monitor` (output
+  arrangement), `ryoku-workspace`, and the `ryoku-keysounds-import` sample
+  importer. The neutral screen and UI helpers the shell drives by bare name (the
+  `ryoku-cmd-*` tools, `ryoku-sysinfo`, the recorder chain) moved to the shell
+  tree, so every compositor ships them. `plugins/` holds the one compositor
+  plugin Ryoku authors, `keysounds` (C++ against the Hyprland plugin API, with
+  its `hyprpm.toml` recipe and the sample generator; see
+  `docs/hyprland-plugins.md`); it ships as a package, not with the config. The
+  rest of the directory deploys to `~/.config/hypr/`.
+- `niri/` the niri config, authored in **KDL**. `config.kdl` is the entry point
+  and `include`s the rest, in override order: the `keyboard.kdl`, `gpu.kdl`,
+  `monitors.kdl` and `monitors_user.kdl` seeds, then the generated
+  `settings.kdl` and `rebinds.kdl`, then `user.kdl` as the last word. Every
+  seed ships because a missing include is a hard config error in niri, and each
+  is comments only: the generated files carry every real setting. There is no
+  `modules/` and no `scripts/`, since the neutral settings come from the store
+  and the keybind helpers are shell verbs. It deploys to `~/.config/niri/`.
+  See `docs/compositors.md`.
 - `lockscreen/` `qylock/` (the lock theme and its quickshell lockscreen),
   `install-qylock`, and `sddm/` (the greeter setup).
 - `shell/` the desktop shell subsystem: `quickshell/` (the QML UI. Every surface
@@ -40,8 +53,9 @@ truth for the live desktop.
   monitor from one scene (`shell.qml`): `modules/` is one directory per surface
   (`bar` the four-edge frame bars with the bounded menu manager, rail status
   popout cards (`bar/popouts/`), the Super+Escape control sidebar and pluggable
-  bar styles (`bar/barstyles/`, see `docs/barstyles.md`); then `launcher`,
-  `overview` (Super+Tab), `wallpaper`,
+  bar styles (`bar/barstyles/`, see `docs/barstyles.md`); then `dock` the app
+  dock on the edge opposite the bar (its own surface, shared by every bar style),
+  `launcher`, `overview` (Super+Tab), `wallpaper`,
   `visualizer` (a click-through spectrum layer that renders through the shared
   `Ryoku.Ui` spectrum field, keeping only its per-frame band math in its own
   `Motion.qml`), `osd`, `notifications`, `capture`, `confirm`, and `desktop` the
@@ -55,6 +69,10 @@ truth for the live desktop.
   `plugin/` (`Ryoku.Blobs`, the C++/QML SDF metaball module the frame renders
   with; `build.sh` builds it, and it ships prebuilt), `matugen/` (palette
   templates rendered on every wallpaper change), `qt6ct/` (the Qt icon theme, `qt6ct.conf`),
+  `scripts/` (the neutral leaf helpers the UI drives by bare name: the
+  `ryoku-cmd-*` screen and recorder tools, `ryoku-sysinfo`/`ryoku-profile-stats`,
+  `ryoku-app`, `ryostage`, and the stash `.sh` helpers, shipped with the shell so
+  they resolve on PATH under any compositor),
   `systemd/` (the user session target), `ipc/` (`ryoku-shell`, the Go shell
   daemon that supervises the Quickshell components, owns wallpaper/clipboard/
   lock and the GNOME keyring password prompt (it registers as the keyring system
@@ -71,6 +89,17 @@ truth for the live desktop.
   band math, `lib/place.js` (with `place.test.mjs`) the placement math for a box that turns
   and leans.
   Installs to `/usr/lib/qt6/qml/Ryoku/Ui`.
+- `i18n/` the translation catalog and the three runtimes that read it. English
+  source strings are the keys, so a developer only ever writes English and a
+  missing translation shows English rather than nothing: `langs.json` is the one
+  language table (35 languages, add one here and nowhere else),
+  `catalog/<code>.json` the generated strings, `catalog/overrides/<code>.json`
+  the human fixes the generator may never overwrite, `i18n.go`/`langs.go` the Go
+  runtime the CLI and both installers link (module `ryoku-i18n`), and `tools/`
+  the extractor/translator (`sync.py`, shipped as `/usr/bin/ryoku-i18n`) and the
+  QML AST wrapper. Installs to `/usr/share/ryoku/i18n`, which the QML singleton
+  (`ui/Singletons/I18n.qml`), the Go runtime and the installer's shell
+  (`installation/backend/lib/i18n.sh`) all read. See `docs/i18n.md`.
 - `cli/` the user-facing control CLI, one Go program (`ryoku`): `update`,
   `rollback`, `snapshots`, `status`, `materialize` (lay the base configs into
   `~/.config`), and `reload`. It orchestrates pacman, yay, and snapper; it does
@@ -161,8 +190,9 @@ System-level definition installed into the target.
   (`release/packages/`). `ryoku-desktop` is the umbrella: it version-pins the
   monorepo components (`ryoku-shell`, `ryoku-hub`, `ryoku-rashin`, `ryoku-blobs`,
   `ryoku`, and the Hyprland plugins `hypr-dynamic-cursors`, `ryoku-hypr-plugins`,
-  `hyprglass`, `imgborders`) and also depends on `ryoku-keyring` and the `gpk`
-  package manager, and lays the base config under `/usr/share/ryoku/config`.
+  `hyprglass`, `imgborders`, `ryoku-keysounds`) and also depends on
+  `ryoku-keyring` and the `gpk` package manager, and lays the base config under
+  `/usr/share/ryoku/config`.
 - The installer adds the `[ryoku]` repo, imports the keyring, and installs
   `ryoku-desktop`; per-user config is then copied into `~/.config` by
   `ryoku materialize`, which clobbers Ryoku-owned files and prunes dropped ones
@@ -189,14 +219,16 @@ raw.githubusercontent.com serves them with no release infrastructure.
 ## `release/` packaging
 
 - `packages/` one directory per pacman package in the `[ryoku]` repo, each a
-  `PKGBUILD`. 26 in all, in four groups by why they exist:
+  `PKGBUILD`. 31 in all, in four groups by why they exist:
   - built from the checked-out monorepo: the components (`ryoku-shell`,
-    `ryoku-hub`, `ryoku-rashin`, `ryoku`, `ryoku-blobs`, `ryomotion`), the
-    `ryoku-desktop` umbrella, `ryoku-keyring`, and the `gpk` package manager.
+    `ryoku-hub`, `ryoku-rashin`, `ryoku`, `ryoku-blobs`, `ryomotion`,
+    `ryotunes`, `ryogami` the wallpaper daemon), the `ryoku-desktop` umbrella,
+    `ryoku-keyring`, and the `gpk` package manager.
   - Hyprland plugins: `hypr-dynamic-cursors`, `ryoku-hypr-plugins`, `hyprglass`,
-    `imgborders`.
+    `imgborders`, `ryoku-keysounds`; each lays an `.abi` receipt beside its
+    `.so` (see `docs/hyprland-plugins.md`).
   - rebuilt from upstream so `ryoku update` can reach them, because it is pacman
-    and pacman never touches the AUR: `asusctl`, `awww`, `spicetify-cli`,
+    and pacman never touches the AUR: `asusctl`,
     `hyprland-preview-share-picker`, `limine-mkinitcpio-hook`,
     `limine-snapper-sync`, `otf-space-grotesk`, `ryoku-cursors`,
     `ryoku-cursor-material`.

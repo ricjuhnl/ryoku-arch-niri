@@ -9,17 +9,28 @@ Item {
     property string mode: "cover"       // cover | hero | plate
     property bool selected: false
     property bool active: true
-    property string artOverride: ""     // the dither toggle shows this in place of item.art
+    property string artOverride: ""     // a caller showing the other look in place of ours
 
     readonly property bool tile: mode === "cover"
-    readonly property bool hasArtwork: String(item && item.art || "") !== ""
+    // The catalogue shows a product as its author made it: `art` is the dithered
+    // bake and `artRaw` the colour original, so browse leads with the colour and
+    // the dither is what a detail view (or the install) opts into.
+    readonly property string coverArt: {
+        const raw = String(item && item.artRaw || "");
+        return raw.length > 0 ? raw : String(item && item.art || "");
+    }
+    readonly property bool hasArtwork: cover.coverArt !== ""
     readonly property bool hasIdentity: Boolean(item && (item.id || item.name))
-    readonly property string coverTitle: String(item && (item.name || item.id) || "Untitled")
+    readonly property string coverTitle: String(item && (item.name || item.id) || I18n.tr("Untitled"))
     readonly property color coverSurface: item && item.surface ? item.surface : Tokens.paperLift
     readonly property color coverAccent: item && item.accent ? item.accent : Tokens.inkDim
     readonly property var status: StoreLogic.statusLabels(item)
     readonly property string statusTag: (status.length > 0 && status[0] !== "AVAILABLE") ? status[0] : ""
     readonly property bool flagged: statusTag === "UPDATE" || statusTag === "ACTIVE" || statusTag === "ENABLED"
+    // A product written for another window manager is drawn, not offered: the
+    // tile stays in the grid so the catalogue reads whole, and desaturates with
+    // its tag carrying the reason, the way an unavailable option should.
+    readonly property bool foreign: StoreLogic.isUnavailable(item)
 
     clip: true
     Accessible.role: Accessible.Graphic
@@ -27,7 +38,7 @@ Item {
     Accessible.name: [
         coverTitle,
         String(item && (item.categoryName || item.category) || ""),
-        cover.status.join(", ")
+        cover.status.map(s => I18n.tr(s)).join(", ")
     ].filter(Boolean).join(", ")
 
     Rectangle {
@@ -74,7 +85,7 @@ Item {
 
     ProductMedia {
         anchors.fill: parent
-        source: cover.artOverride !== "" ? cover.artOverride : (cover.hasArtwork ? cover.item.art : "")
+        source: cover.artOverride !== "" ? cover.artOverride : cover.coverArt
         mode: cover.mode
         surface: cover.coverSurface
         active: cover.active
@@ -90,6 +101,16 @@ Item {
             GradientStop { position: 0.58; color: "#b0000000" }
             GradientStop { position: 1; color: "#ec000000" }
         }
+    }
+
+    // A product written for another window manager reads as a greyed-out option:
+    // the art is veiled, the tag and the metadata stay crisp so the tile still
+    // says what it is and why it cannot run here. Drawn after the art and before
+    // the tag for exactly that reason.
+    Rectangle {
+        anchors.fill: parent
+        visible: cover.foreign
+        color: Qt.rgba(0.06, 0.06, 0.06, 0.62)
     }
 
     // status tag, accent-tinted for a live product, so a glance finds the
@@ -112,7 +133,7 @@ Item {
             Text {
                 id: tagText
                 anchors.centerIn: parent
-                text: cover.statusTag
+                text: I18n.tr(cover.statusTag)
                 color: cover.flagged ? Qt.rgba(0, 0, 0, 0.86) : "#e8ffffff"
                 font.family: Tokens.mono
                 font.pixelSize: Tokens.fTiny

@@ -11,15 +11,17 @@ import (
 // /etc/locale.conf is touched.
 func stubWifi(t *testing.T, radio bool, domain, source string, ok bool, country string) {
 	t.Helper()
-	origRadio, origRegdom, origLocale := wifiRadioPresent, wifiRegdom, wifiLocaleCountry
+	origRadio, origRegdom, origLocale, origHelper := wifiRadioPresent, wifiRegdom, wifiLocaleCountry, wifiRegdomHelperPresent
 	t.Cleanup(func() {
 		wifiRadioPresent = origRadio
 		wifiRegdom = origRegdom
 		wifiLocaleCountry = origLocale
+		wifiRegdomHelperPresent = origHelper
 	})
 	wifiRadioPresent = func() bool { return radio }
 	wifiRegdom = func() (string, string, bool) { return domain, source, ok }
 	wifiLocaleCountry = func() string { return country }
+	wifiRegdomHelperPresent = func() bool { return true }
 }
 
 // A desktop with no radio must never see this reconciler at all.
@@ -49,6 +51,21 @@ func TestRegdomWorldDomainWouldSetFromLocale(t *testing.T) {
 	}
 	if !strings.Contains(got.remedy, "ryoku-wifi-regdom set DE") {
 		t.Errorf("fix should name the locale country, got %q", got.remedy)
+	}
+}
+
+func TestRegdomAppliesThroughSudo(t *testing.T) {
+	stubWifi(t, true, "00", "unset", true, "FR")
+	old := setWifiRegdom
+	t.Cleanup(func() { setWifiRegdom = old })
+	called := ""
+	setWifiRegdom = func(country string) error {
+		called = country
+		return nil
+	}
+	reconcileWifiRegdom(false)
+	if called != "FR" {
+		t.Fatalf("regdom helper country = %q, want FR", called)
 	}
 }
 

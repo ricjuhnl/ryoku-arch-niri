@@ -42,7 +42,18 @@ type productTransactionJournal struct {
 	PluginPlacementCaptured bool            `json:"pluginPlacementCaptured,omitempty"`
 }
 
+// installProduct runs the install transaction fetching the manifest and file
+// bytes from the cache.
 func installProduct(ctx context.Context, cache *Cache, category string, entry ProductEntry) error {
+	return installProductFrom(ctx, cache, category, entry, nil)
+}
+
+// installProductFrom is the install transaction. With local nil it fetches the
+// manifest and every file from the cache; with local set it takes the manifest
+// and reads the file bytes from a local directory instead. Every other check is
+// identical either way: destination allowlist, symlink rejection, per-file hash
+// verification, receipt, journal, setPluginPlacementEnabled, and syncProductDerivedState.
+func installProductFrom(ctx context.Context, cache *Cache, category string, entry ProductEntry, local *localProductSource) error {
 	dst, expectedDestination, err := productDestination(category, entry.ID)
 	if err != nil {
 		return err
@@ -50,9 +61,27 @@ func installProduct(ctx context.Context, cache *Cache, category string, entry Pr
 	if err := rejectSymlinkPath(productDestinationRoot(category), filepath.FromSlash(expectedDestination)); err != nil {
 		return err
 	}
-	manifest, err := loadProductManifest(ctx, cache, category, entry)
-	if err != nil {
-		return err
+	// A source can pause downloads of a still-listed product, or list one that is
+	// written for another window manager, without delisting it. Re-read the
+	// authoritative registry (never the provider's cached listing, never a
+	// client-supplied field) and refuse before any manifest or payload byte is
+	// fetched. A local install carries no registry and skips it.
+	if local == nil {
+		if err := assertProductInstallable(ctx, cache, category, entry.ID); err != nil {
+			return err
+		}
+	}
+	var manifest ProductManifest
+	if local != nil {
+		manifest = local.manifest
+		if err := validateProductManifest(category, entry, manifest); err != nil {
+			return err
+		}
+	} else {
+		manifest, err = loadProductManifest(ctx, cache, category, entry)
+		if err != nil {
+			return err
+		}
 	}
 	if manifest.Destination != expectedDestination {
 		return fmt.Errorf("%s/%s: destination %q is outside the category allowlist", category, entry.ID, manifest.Destination)
@@ -132,8 +161,13 @@ func installProduct(ctx context.Context, cache *Cache, category string, entry Pr
 		if !file.Install {
 			continue
 		}
-		rel := path.Join(entry.Path, file.Source)
-		data, err := fetchProductFile(ctx, cache, rel, file.Size, file.SHA256)
+		var data []byte
+		if local != nil {
+			data, err = readLocalProductFile(local.root, file.Source, file.Size, file.SHA256)
+		} else {
+			rel := path.Join(entry.Path, file.Source)
+			data, err = fetchProductFile(ctx, cache, rel, file.Size, file.SHA256)
+		}
 		if err != nil {
 			return fmt.Errorf("%s/%s: files[%d] %s: %w", category, entry.ID, index, file.Source, err)
 		}
@@ -245,7 +279,7 @@ func installProduct(ctx context.Context, cache *Cache, category string, entry Pr
 		return rollback(err)
 	}
 	if category == "plugins" && operation == "install" {
-		if err := disableFreshPlugin(entry.ID); err != nil {
+		if err := setPluginPlacementEnabled(entry.ID, pluginAutoEnable(dst)); err != nil {
 			return rollback(err)
 		}
 		journal.Phase = "install-placement"
@@ -817,7 +851,7 @@ func productDestinationRoot(category string) string {
 }
 
 func fetchProductFile(ctx context.Context, cache *Cache, rel string, size int64, expectedHash string) ([]byte, error) {
-	if cache == nil || cache.client == nil || !validProductPath(rel) || size < 0 || size > maxProductFileSize || !productHashPattern.MatchString(expectedHash) {
+	if cache == nil || !cache.hasDownload() || !validProductPath(rel) || size < 0 || size > maxProductFileSize || !productHashPattern.MatchString(expectedHash) {
 		return nil, fmt.Errorf("invalid product fetch %q", rel)
 	}
 	data, fetchErr := fetchProductFileLive(ctx, cache, rel, size)
@@ -864,7 +898,7 @@ func fetchProductFileLive(ctx context.Context, cache *Cache, rel string, limit i
 		return nil, err
 	}
 	request.Header.Set("Cache-Control", "no-cache")
-	response, err := cache.client.Do(request)
+	response, err := cache.downloadClient().Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -964,6 +998,10 @@ func (riceProvider) Remove(ctx context.Context, id string) error {
 
 func (fastfetchProvider) Remove(ctx context.Context, id string) error {
 	return removeProduct(ctx, "fastfetch", id)
+}
+
+func (ryotunesSkinsProvider) Remove(ctx context.Context, id string) error {
+	return removeProduct(ctx, "ryotunes-skins", id)
 }
 
 func (pluginProvider) Remove(ctx context.Context, id string) error {

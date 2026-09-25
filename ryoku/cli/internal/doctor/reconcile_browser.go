@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"ryoku-cli/internal/sys"
+
+	i18n "ryoku-i18n"
 )
 
 // The WebExtension native-messaging host name and the extension ids that may
@@ -26,7 +28,7 @@ const (
 func reconcileBrowserTheme(checkOnly bool) recResult {
 	home := homeDir()
 	if home == "" {
-		return okRes("no HOME")
+		return okRes(i18n.T("no HOME"))
 	}
 	launcher := filepath.Join(browserDataHome(), "ryoku", "ryoku-browser-host")
 
@@ -42,58 +44,69 @@ func reconcileBrowserTheme(checkOnly bool) recResult {
 		"allowed_origins": []string{"chrome-extension://" + browserChromiumID + "/"},
 	}
 
-	// browser profile root -> native-messaging dir + which manifest it takes.
+	// A browser family is present when its probe dir exists; the host manifest
+	// then goes into each of its native-messaging dirs. Zen keeps its profiles
+	// under XDG ~/.config/zen, but resolves native-messaging manifests from the
+	// classic ~/.mozilla dir (verified against the shipped Zen), so probe the
+	// XDG dir and install into ~/.mozilla.
 	type target struct {
-		root, dir string
-		manifest  map[string]any
+		probe    string
+		dirs     []string
+		manifest map[string]any
 	}
 	targets := []target{
-		{".mozilla", "native-messaging-hosts", ffManifest},
-		{".librewolf", "native-messaging-hosts", ffManifest},
-		{".zen", "native-messaging-hosts", ffManifest},
-		{".config/chromium", "NativeMessagingHosts", crManifest},
-		{".config/google-chrome", "NativeMessagingHosts", crManifest},
-		{".config/BraveSoftware/Brave-Browser", "NativeMessagingHosts", crManifest},
-		{".config/microsoft-edge", "NativeMessagingHosts", crManifest},
-		{".config/vivaldi", "NativeMessagingHosts", crManifest},
+		{".mozilla", []string{".mozilla/native-messaging-hosts"}, ffManifest},
+		{".librewolf", []string{".librewolf/native-messaging-hosts"}, ffManifest},
+		{".config/zen", []string{".mozilla/native-messaging-hosts"}, ffManifest},
+		{".config/chromium", []string{".config/chromium/NativeMessagingHosts"}, crManifest},
+		{".config/google-chrome", []string{".config/google-chrome/NativeMessagingHosts"}, crManifest},
+		{".config/BraveSoftware/Brave-Browser", []string{".config/BraveSoftware/Brave-Browser/NativeMessagingHosts"}, crManifest},
+		{".config/microsoft-edge", []string{".config/microsoft-edge/NativeMessagingHosts"}, crManifest},
+		{".config/vivaldi", []string{".config/vivaldi/NativeMessagingHosts"}, crManifest},
 	}
 
 	var pending, did []string
 	present := false
+	seen := map[string]bool{}
 	launcherOK := launcherCurrent(launcher)
 	for _, t := range targets {
-		root := filepath.Join(home, t.root)
-		if !sys.Exists(root) {
+		if !sys.Exists(filepath.Join(home, t.probe)) {
 			continue
 		}
 		present = true
-		manifestPath := filepath.Join(root, t.dir, browserHostName+".json")
-		if launcherOK && manifestCurrent(manifestPath, t.manifest, launcher) {
-			continue
+		for _, d := range t.dirs {
+			manifestPath := filepath.Join(home, d, browserHostName+".json")
+			if seen[manifestPath] {
+				continue
+			}
+			seen[manifestPath] = true
+			if launcherOK && manifestCurrent(manifestPath, t.manifest, launcher) {
+				continue
+			}
+			if checkOnly {
+				pending = append(pending, d)
+				continue
+			}
+			if err := writeLauncher(launcher); err != nil {
+				return failRes(i18n.T("could not write the browser host launcher: %v"), err)
+			}
+			launcherOK = true
+			if err := writeManifestJSON(manifestPath, t.manifest); err != nil {
+				return failRes(i18n.T("could not install the host manifest for %s: %v"), d, err)
+			}
+			did = append(did, d)
 		}
-		if checkOnly {
-			pending = append(pending, t.root)
-			continue
-		}
-		if err := writeLauncher(launcher); err != nil {
-			return failRes("could not write the browser host launcher: %v", err)
-		}
-		launcherOK = true
-		if err := writeManifestJSON(manifestPath, t.manifest); err != nil {
-			return failRes("could not install the host manifest for %s: %v", t.root, err)
-		}
-		did = append(did, t.root)
 	}
 
 	switch {
 	case !present:
-		return okRes("no supported browser present")
+		return okRes(i18n.T("no supported browser present"))
 	case checkOnly && len(pending) > 0:
-		return wouldRes("install the Ryoku browser host for: %s", strings.Join(pending, ", "))
+		return wouldRes(i18n.T("install the Ryoku browser host for: %s"), strings.Join(pending, ", "))
 	case len(did) > 0:
-		return fixedRes("installed the browser host for: %s", strings.Join(did, ", "))
+		return fixedRes(i18n.T("installed the browser host for: %s"), strings.Join(did, ", "))
 	default:
-		return okRes("browser host installed")
+		return okRes(i18n.T("browser host installed"))
 	}
 }
 

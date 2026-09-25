@@ -8,8 +8,9 @@ package as the base config under `/usr/share/ryoku/config`, which
 ## Layout
 
 - `ipc/` The control plane: one Go program, `ryoku-shell`. As `ryoku-shell daemon`
-  it supervises the Quickshell components, starts the clipboard and wallpaper
-  helpers, and listens on a single Unix socket. As `ryoku-shell <command>` it is a
+  it supervises the Quickshell components, starts the clipboard helpers (the
+  selection watcher and the selection keeper) and the wallpaper helpers, and
+  listens on a single Unix socket. As `ryoku-shell <command>` it is a
   thin client that forwards a command to that socket; Hyprland keybinds use it.
 - `quickshell/` The hand-written QML UI: `pill` (the four-edge frame bars,
   screen frame, bounded menu manager, power menu, and preserved frame
@@ -47,7 +48,7 @@ socket and one place that knows how to talk to the components:
 | `ryoku-shell daemon` | supervise the persistent components, clipboard history and wallpaper workers, then serve the socket |
 | `launcher`, `power` | toggle the launcher or power surface on the active monitor |
 | `bar <id>` | open a finite frame-bar menu or surface on the active monitor |
-| `overview`, `wallpaper-switcher` | open the workspace overview or wallpaper picker |
+| `overview` | open the workspace overview on the active monitor |
 | `lock` | lock the screen with qylock |
 | `wallpaper [next\|init\|set <path>]` | change the wallpaper and retheme |
 | `voice` | toggle Voxtype transcription and its live mic surface |
@@ -62,7 +63,8 @@ dumb. Build it with `go build` in `ipc/`; the binary belongs on `PATH` as
 
 Beyond Hyprland, quickshell, `go` (to build `ryoku-shell`), and cmake + ninja +
 qt6-shadertools (to build the `Ryoku.Blobs` plugin), the shell calls at
-LED color), `wl-clipboard` (clipboard history and capture copy), `imagemagick`
+LED color), `wl-clipboard` (clipboard history and capture copy), `wl-clip-persist`
+(keeps the selection when the app that copied closes), `imagemagick`
 (wallpaper thumbnails), `hyprpicker`, `hypridle` and `brightnessctl` (laptop
 idle/dim), `upower` (battery state), `wireplumber` (`wpctl`), `pipewire-pulse`
 (`pactl` voice-call state and mic source), `cava` (music, mic, and desktop visualizers), `playerctl` (media keys),
@@ -82,8 +84,8 @@ Run the shell straight from this checkout on a running Hyprland session, no
 install required:
 
     ryoku/shell/dev-run.sh       # build ryoku-shell, then run it with RYOKU_SHELL_DIR set
-    ryoku/shell/dev-binds.sh on  # optional: bind the shell keys for this session
-    ryoku/shell/dev-stop.sh      # stop it (restore your keys with: hyprctl reload)
+    ryoku/hyprland/dev-binds.sh on  # optional: bind the shell keys for this session
+    ryoku/shell/dev-stop.sh      # stop it (restore your keys with: ryoku wm act config.reload)
     ryoku deploy                # build + materialize this checkout into ~/.config, then reload
 
 The daemon launches each component with `qs -p`, so your own `~/.config` is never

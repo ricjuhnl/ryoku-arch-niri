@@ -1,55 +1,38 @@
 import QtQuick
-import Quickshell
 import "../kit"
 import "../../modules"
+import Ryoku.Ui
 import Ryoku.Ui.Singletons
+import shell.services
 
-// Bars editor route: a scrollable live bar-surface panel ported from Shibumi's
-// ActiveBarSettingsPage / BarSurfaceSettings / BarStylePreviewCard, wearing
-// qsbar's dark skin. Every control writes straight to `root` (the qsbar Theme),
-// so the running bar updates live and mirrors to Bar Studio. Null-guarded - the
-// page may briefly exist before `root` is assigned, and some tokens live on the
-// V2 Theme first (guard the barShellStyleValid function call in particular).
+// Bar route (帯) on the QS Bar Settings kit. A live bar-surface panel: every
+// control writes straight to `root` (the qsbar Theme), so the running bar updates
+// live and mirrors to Bar Studio. The page opens with the live bar silhouette,
+// then numbered sections carry the surface knobs. Arranging the widgets is the
+// Layout route's job, so this page holds no layout controls. Root reads stay
+// null-guarded - the page may briefly exist before `root` is assigned, and some
+// tokens live on the V2 Theme first (guard the barShellStyleValid call in
+// particular).
 Item {
     id: page
     property var root: null
     property var cc: null
+    readonly property var tk: page.cc ? page.cc.tokens : null
 
-    // ── null-safe token shortcuts (fallbacks match the kit primitives' own) ──
-    readonly property color cAccent: page.root ? page.root.seal : "#c4746e"
-    readonly property color cInk: page.root ? page.root.ink : "#dddddd"
-    readonly property color cSumi: page.root ? page.root.sumi : "#888888"
-    readonly property color cSep: page.root ? page.root.sep : "#333333"
-    readonly property color cIdle: page.root ? page.root.fillIdle : "#1a1a1a"
-    readonly property string fontMono: page.root ? page.root.mono : "monospace"
-    readonly property int rTile: page.root ? page.root.tileRadius : 6
-    readonly property real aActive: page.root ? page.root.fillActiveAlpha : 0.22
-    readonly property real aHover: page.root ? page.root.fillHoverAlpha : 0.10
+    // The content column is capped so a label and its control stay related. This
+    // cap is the fix for the old panel's 600px voids: never stretch a row to the
+    // panel's full width.
+    readonly property real colW: Math.min(page.width, page.tk ? page.tk.contentW : 640)
+    implicitHeight: col.implicitHeight
 
-    readonly property int gap: (page.cc && page.cc.tokens) ? page.cc.tokens.gap : 10
-    readonly property int sectionGap: (page.cc && page.cc.tokens) ? page.cc.tokens.sectionGap : 16
-
-    // the five bar forms + their captions (drives the header + the FORM grid)
+    // the five bar forms + their captions (drives the FORM grid)
     readonly property var formModel: [
-        { form: "islands", label: "Islands", detail: "Split pills" },
-        { form: "full",  label: "Full",  detail: "Edge to edge" },
-        { form: "fit",   label: "Fit",   detail: "Inset rounded frame" },
-        { form: "dock",  label: "Dock",  detail: "Open desktop edge" },
-        { form: "notch", label: "Notch", detail: "Flowing shoulders" }
+        { form: "islands", label: I18n.tr("Islands"), detail: I18n.tr("Split pills") },
+        { form: "full",    label: I18n.tr("Full"),    detail: I18n.tr("Edge to edge") },
+        { form: "fit",     label: I18n.tr("Fit"),     detail: I18n.tr("Inset frame") },
+        { form: "dock",    label: I18n.tr("Dock"),    detail: I18n.tr("Open edge") },
+        { form: "notch",   label: I18n.tr("Notch"),   detail: I18n.tr("Flowing shoulders") }
     ]
-    function formInfo(f) {
-        for (var i = 0; i < formModel.length; i++)
-            if (formModel[i].form === f) return formModel[i]
-        return null
-    }
-
-    // header strings, derived live off the active form
-    readonly property string formCaption: {
-        if (!page.root || !page.root.barShellStyle)
-            return "Live bar surface"
-        var fi = page.formInfo(String(page.root.barShellStyle))
-        return fi ? (fi.label + " · " + fi.detail) : String(page.root.barShellStyle)
-    }
 
     // One shape picker over the single bar: islands is the split-pill form, the
     // rest are the continuous shell forms. Selecting a form just records it.
@@ -60,554 +43,497 @@ Item {
             page.root.barShellStyle = f
     }
 
-    // ── gap-animation mode selection (restores the old ControlPanel's picker) ──
-    // Direct-select: each tile sets barAnim to its exact mode value (0-8).
+    // gap-animation mode: each option sets barAnim to its exact mode value (0-8).
     readonly property int curAnim: (page.root && page.root.barAnim !== undefined) ? page.root.barAnim : -1
     function setAnim(v) { if (page.root && page.root.barAnim !== undefined) page.root.barAnim = v }
 
-    component AnimTile: Rectangle {
-        property string caption: ""
-        property bool on: false
-        signal act()
-        readonly property color hf: Qt.rgba(page.cInk.r, page.cInk.g, page.cInk.b, 0.06)
-        readonly property color hb: Qt.rgba(page.cInk.r, page.cInk.g, page.cInk.b, 0.28)
-        height: 28
-        radius: page.rTile
-        color: on ? Qt.rgba(page.cAccent.r, page.cAccent.g, page.cAccent.b, 0.14)
-                  : (tileMa.containsMouse ? hf : page.cIdle)
-        border.width: 1
-        border.color: on ? Qt.rgba(page.cAccent.r, page.cAccent.g, page.cAccent.b, 0.52)
-                         : (tileMa.containsMouse ? hb : page.cSep)
-        Behavior on color { ColorAnimation { duration: 120 } }
-        UiText {
-            anchors.centerIn: parent
-            text: parent.caption
-            color: parent.on ? page.cAccent : page.cInk
-            font.family: page.fontMono
-            font.pixelSize: 12
-            font.weight: parent.on ? Font.DemiBold : Font.Normal
-        }
-        MouseArea { id: tileMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: parent.act() }
+    // gap-animation presets, label <-> mode value both ways (mirrors the Hub).
+    readonly property var animModes: [
+        { v: 0, label: I18n.tr("Off") },
+        { v: 1, label: I18n.tr("Stream") },
+        { v: 2, label: I18n.tr("Surge") },
+        { v: 3, label: I18n.tr("Bolt") },
+        { v: 4, label: I18n.tr("Bolt-2") },
+        { v: 7, label: I18n.tr("Reactor") },
+        { v: 8, label: I18n.tr("Quotes") }
+    ]
+    function animLabel(v) {
+        for (var i = 0; i < page.animModes.length; i++)
+            if (page.animModes[i].v === v) return page.animModes[i].label;
+        return "";
     }
+    function animValue(label) {
+        for (var i = 0; i < page.animModes.length; i++)
+            if (page.animModes[i].label === label) return page.animModes[i].v;
+        return 0;
+    }
+
+    // The last palette slot the bar actually wore, so switching Follow wallpaper
+    // off puts back the colour that was there instead of a default.
+    property string pinnedSlot: "color01"
+    Binding {
+        target: page
+        property: "pinnedSlot"
+        value: page.root ? page.root.barColor : "color01"
+        when: page.root && !page.root.barColorIsAccent
+        restoreMode: Binding.RestoreNone
+    }
+
+    // what is still below the plate's edge; the stage reads it for the fade.
+    readonly property real scrollRemaining: Math.max(0, flick.contentHeight - flick.height - flick.contentY)
 
     Flickable {
         id: flick
         anchors.fill: parent
         contentWidth: width
-        contentHeight: col.implicitHeight
+        // a page that overflows gets a tail, so its last row can scroll clear
+        // of the bottom fade instead of living inside it.
+        contentHeight: col.implicitHeight + (col.implicitHeight > height && page.tk ? page.tk.tailPad : 0)
         clip: true
         boundsBehavior: Flickable.StopAtBounds
 
         Column {
             id: col
-            width: flick.width
-            spacing: page.sectionGap
+            width: page.colW
+            spacing: page.tk ? page.tk.sectionGap : 16
 
-            // ── header card: V<n> ACTIVE + active form caption + LIVE dot ──
+            // ── live bar preview: a single full-width plate over the sections ──
             Rectangle {
-                width: col.width
-                height: 64
-                radius: page.rTile
-                color: page.root
-                    ? Qt.rgba(page.cAccent.r, page.cAccent.g, page.cAccent.b, 0.09)
-                    : page.cIdle
+                width: page.colW
+                height: sil.implicitHeight + (page.tk ? page.tk.gap * 2 : 24)
+                radius: page.tk ? Tokens.radius : 6
+                color: page.tk ? Tokens.paperLift : "#161616"
                 border.width: 1
-                border.color: page.root
-                    ? Qt.rgba(page.cAccent.r, page.cAccent.g, page.cAccent.b, 0.5)
-                    : page.cSep
+                border.color: page.tk ? Tokens.line : "#333333"
 
-                Row {
-                    id: liveRow
-                    anchors.right: parent.right
-                    anchors.rightMargin: 14
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 6
-
-                    Rectangle {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 7
-                        height: 7
-                        radius: 3.5
-                        color: page.cAccent
-                        SequentialAnimation on opacity {
-                            loops: Animation.Infinite
-                            running: true
-                            NumberAnimation { from: 1.0; to: 0.3; duration: 900; easing.type: Easing.InOutSine }
-                            NumberAnimation { from: 0.3; to: 1.0; duration: 900; easing.type: Easing.InOutSine }
-                        }
-                    }
-                    UiText {
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: I18n.tr("LIVE")
-                        color: page.cAccent
-                        font.family: page.fontMono
-                        font.pixelSize: 10
-                        font.letterSpacing: 0.8
-                        font.weight: Font.DemiBold
-                    }
-                }
-
-                Column {
+                BarSilhouette {
+                    id: sil
                     anchors.left: parent.left
-                    anchors.right: liveRow.left
+                    anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    anchors.leftMargin: 14
-                    anchors.rightMargin: 12
-                    spacing: 3
+                    anchors.leftMargin: page.tk ? page.tk.pad : 24
+                    anchors.rightMargin: page.tk ? page.tk.pad : 24
+                    root: page.root
+                    form: page.activeForm
+                }
+            }
 
-                    UiText {
-                        text: page.activeForm.toUpperCase() + I18n.tr(" ACTIVE")
-                        color: page.cInk
-                        font.family: page.fontMono
-                        font.pixelSize: 24
-                        font.weight: Font.DemiBold
-                        font.letterSpacing: 1
+            // ── 01 POSITION ──
+            Entrance {
+                width: page.colW
+                index: 0
+                SettingCard {
+                    width: page.colW
+                    title: I18n.tr("01 POSITION")
+                    kana: "\u4f4d\u7f6e"
+
+                    SettingRow {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        controlWidth: 130
+                        label: I18n.tr("Edge")
+                        source: "shell.json"
+                        Seg {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            options: ["top", "bottom"]
+                            current: page.root ? page.root.barPosition : "top"
+                            onChose: key => { if (page.root) page.root.barPosition = key }
+                        }
                     }
-                    UiText {
+                    SettingRow {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        divider: true
+                        controlWidth: 54
+                        label: I18n.tr("Auto-hide")
+                        desc: I18n.tr("Reveal on edge hover")
+                        source: "shell.json"
+                        Sw {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            on: page.root ? page.root.barAutoHide === true : false
+                            onToggled: value => { if (page.root && page.root.barAutoHide !== undefined) page.root.barAutoHide = value }
+                        }
+                    }
+                    SettingRow {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        divider: true
+                        controlWidth: 58
+                        label: I18n.tr("Size")
+                        unit: "%"
+                        value: String(Math.round(100 * (page.root ? page.root.barScale : 1)))
+                        desc: I18n.tr("Bar scale, apart from the display")
+                        source: "shell.json"
+                        Step {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            from: 100
+                            to: 200
+                            stepBy: 10
+                            value: 100 * (page.root ? page.root.barScale : 1)
+                            onModified: v => {
+                                if (page.root && page.root.barScale !== undefined)
+                                    page.root.barScale = v / 100
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── 02 MOTION: the stream flowing in the gaps between widgets. Right
+            // under position, so it is the second thing on the page, not the last ──
+            Entrance {
+                width: page.colW
+                index: 1
+                SettingCard {
+                    width: page.colW
+                    title: I18n.tr("02 MOTION")
+                    kana: "\u52d5\u304d"
+
+                    SettingRow {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        block: true
+                        label: I18n.tr("Gap animation")
+                        desc: I18n.tr("Motion in the gaps between widgets")
+                        source: "shell.json"
+                        Seg {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            options: page.animModes.map(m => m.label)
+                            current: page.animLabel(page.curAnim)
+                            onChose: key => page.setAnim(page.animValue(key))
+                        }
+                    }
+                    SettingRow {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        visible: page.curAnim >= 1 && page.curAnim <= 6
+                        divider: true
+                        controlWidth: 54
+                        label: I18n.tr("Drift when silent")
+                        desc: I18n.tr("Keep it moving with no audio, on any power profile")
+                        source: "performance.json"
+                        Sw {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            on: Perf.ambientBarMotionPref
+                            onToggled: value => Perf.setAmbientBarMotion(value)
+                        }
+                    }
+                }
+            }
+
+            // ── 03 FORM: one row of named tiles, the way the Hub picks a bar
+            // style. The live silhouette sits at the top of this page already, so a
+            // tile only has to name the shape.
+            Entrance {
+                width: page.colW
+                index: 2
+                SettingCard {
+                    width: page.colW
+                    title: I18n.tr("03 FORM")
+                    kana: "\u5f62"
+
+                    Item {
                         width: parent.width
-                        text: page.formCaption
-                        color: page.cSumi
-                        elide: Text.ElideRight
-                        font.family: page.fontMono
-                        font.pixelSize: 10
-                    }
-                }
-            }
+                        height: formRow.height + (page.tk ? page.tk.gap * 2 : 24)
 
-            // ── POSITION ──
-            CcSection {
-                width: col.width
-                root: page.root
-                title: I18n.tr("POSITION")
-                desc: I18n.tr("Anchor the bar to the top or bottom edge")
+                        Row {
+                            id: formRow
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.leftMargin: page.tk ? page.tk.gap : 12
+                            anchors.rightMargin: page.tk ? page.tk.gap : 12
+                            spacing: Tokens.s2
+                            readonly property real cellW: (width - (page.formModel.length - 1) * Tokens.s2)
+                                / Math.max(1, page.formModel.length)
 
-                CcSeg {
-                    root: page.root
-                    options: [{ key: "top", label: "Top" }, { key: "bottom", label: "Bottom" }]
-                    current: page.root ? page.root.barPosition : "top"
-                    onChose: k => { if (page.root) page.root.barPosition = k }
-                }
-            }
+                            Repeater {
+                                model: page.formModel
 
-            // ── BEHAVIOR ──
-            CcSection {
-                width: col.width
-                root: page.root
-                title: I18n.tr("BEHAVIOR")
-                desc: I18n.tr("How the bar behaves on the desktop")
+                                delegate: Rectangle {
+                                    id: ftile
+                                    required property var modelData
+                                    readonly property bool on: page.activeForm === modelData.form
 
-                CcRow {
-                    root: page.root
-                    label: I18n.tr("Auto-hide")
-                    desc: I18n.tr("Hide the bar; reveal it on a slow hover along the edge")
-                    controlWidth: 108
-                    CcSeg {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        root: page.root
-                        options: [{ key: "on", label: "On" }, { key: "off", label: "Off" }]
-                        current: (page.root && page.root.barAutoHide) ? "on" : "off"
-                        onChose: k => { if (page.root && page.root.barAutoHide !== undefined) page.root.barAutoHide = (k === "on") }
-                    }
-                }
-            }
+                                    width: formRow.cellW
+                                    height: Tokens.px(58)
+                                    radius: Tokens.radius
+                                    color: ftile.on ? Tokens.bone : (fma.containsMouse ? Tokens.tint5 : "transparent")
+                                    border.width: Tokens.border
+                                    border.color: ftile.on ? Tokens.bone : Tokens.line
+                                    Behavior on color { ColorAnimation { duration: Tokens.snap } }
 
-            // ── SURFACE (one form-aware section over both engines) ──
-            CcSection {
-                width: col.width
-                root: page.root
-                title: I18n.tr("SURFACE")
-                desc: I18n.tr("Borders, corners, shadow and frost on the bar")
+                                    Column {
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.margins: Tokens.s3
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        spacing: 2
 
-                CcRow {
-                    root: page.root
-                    label: I18n.tr("Bar border")
-                    desc: I18n.tr("Outline the bar")
-                    controlWidth: 108
-                    CcSeg {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        root: page.root
-                        options: [{ key: "on", label: "On" }, { key: "off", label: "Off" }]
-                        current: (page.root && page.root.barBorderEnabled) ? "on" : "off"
-                        onChose: k => {
-                            if (page.root && page.root.barBorderEnabled !== undefined) page.root.barBorderEnabled = (k === "on")
-                        }
-                    }
-                }
-                CcRow {
-                    root: page.root
-                    label: I18n.tr("Corners")
-                    desc: I18n.tr("Round the bar's corners") + " · " + (page.root ? page.root.barCornerRadius : 0) + "px"
-                    controlWidth: 150
-                    CcSeg {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        root: page.root
-                        options: [{ key: "square", label: "Square" }, { key: "soft", label: "Soft" }, { key: "round", label: "Round" }]
-                        current: (page.root && page.root.barCornerRadius <= 0) ? "square"
-                            : (page.root && page.root.barCornerRadius >= 16) ? "round" : "soft"
-                        onChose: k => {
-                            var px = (k === "square" ? 0 : k === "round" ? 16 : 8)
-                            if (page.root && page.root.barCornerRadius !== undefined) page.root.barCornerRadius = px
-                        }
-                    }
-                }
-                CcRow {
-                    root: page.root
-                    label: I18n.tr("Panel + tooltip")
-                    desc: I18n.tr("Outline panels and tooltips")
-                    controlWidth: 108
-                    CcSeg {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        root: page.root
-                        options: [{ key: "on", label: "On" }, { key: "off", label: "Off" }]
-                        current: (page.root && page.root.panelTooltipBorderEnabled) ? "on" : "off"
-                        onChose: k => { if (page.root && page.root.panelTooltipBorderEnabled !== undefined) page.root.panelTooltipBorderEnabled = (k === "on") }
-                    }
-                }
-                CcRow {
-                    root: page.root
-                    label: I18n.tr("Depth")
-                    desc: I18n.tr("Soft shadow behind pills, panels and tooltips")
-                    controlWidth: 108
-                    CcSeg {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        root: page.root
-                        options: [{ key: "on", label: "On" }, { key: "off", label: "Off" }]
-                        current: (page.root && page.root.barShadowEnabled) ? "on" : "off"
-                        onChose: k => {
-                            if (page.root && page.root.barShadowEnabled !== undefined) page.root.barShadowEnabled = (k === "on")
-                        }
-                    }
-                }
-                CcRow {
-                    root: page.root
-                    label: I18n.tr("Frost")
-                    desc: I18n.tr("Translucent bar surfaces")
-                    controlWidth: 108
-                    CcSeg {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        root: page.root
-                        options: [{ key: "on", label: "On" }, { key: "off", label: "Off" }]
-                        current: (page.root && page.root.barFrostEnabled) ? "on" : "off"
-                        onChose: k => {
-                            if (page.root && page.root.barFrostEnabled !== undefined) page.root.barFrostEnabled = (k === "on")
-                        }
-                    }
-                }
-
-            }
-
-            // ── DOCK: a qsbar-style app dock on the edge opposite the bar ──
-            CcSection {
-                width: col.width
-                root: page.root
-                title: I18n.tr("DOCK")
-                desc: I18n.tr("An app dock on the edge opposite the bar")
-
-                CcRow {
-                    root: page.root
-                    label: I18n.tr("Dock")
-                    desc: I18n.tr("Show the app dock opposite the bar")
-                    controlWidth: 108
-                    CcSeg {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        root: page.root
-                        options: [{ key: "on", label: "On" }, { key: "off", label: "Off" }]
-                        current: (page.root && page.root.dockEnabled) ? "on" : "off"
-                        onChose: k => { if (page.root && page.root.dockEnabled !== undefined) page.root.dockEnabled = (k === "on") }
-                    }
-                }
-                CcRow {
-                    root: page.root
-                    label: I18n.tr("Frost")
-                    desc: I18n.tr("Translucent dock island")
-                    controlWidth: 108
-                    enabled: page.root ? page.root.dockEnabled : false
-                    CcSeg {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        root: page.root
-                        options: [{ key: "on", label: "On" }, { key: "off", label: "Off" }]
-                        current: (page.root && page.root.dockFrost) ? "on" : "off"
-                        onChose: k => { if (page.root && page.root.dockFrost !== undefined) page.root.dockFrost = (k === "on") }
-                    }
-                }
-                CcRow {
-                    root: page.root
-                    label: I18n.tr("Depth")
-                    desc: I18n.tr("Soft shadow behind the dock island")
-                    controlWidth: 108
-                    enabled: page.root ? page.root.dockEnabled : false
-                    CcSeg {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        root: page.root
-                        options: [{ key: "on", label: "On" }, { key: "off", label: "Off" }]
-                        current: (page.root && page.root.dockShadow) ? "on" : "off"
-                        onChose: k => { if (page.root && page.root.dockShadow !== undefined) page.root.dockShadow = (k === "on") }
-                    }
-                }
-                CcRow {
-                    root: page.root
-                    label: I18n.tr("Magnify")
-                    desc: I18n.tr("Grow icons under the cursor; off in Power Saver")
-                    controlWidth: 108
-                    enabled: page.root ? page.root.dockEnabled : false
-                    CcSeg {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        root: page.root
-                        options: [{ key: "on", label: "On" }, { key: "off", label: "Off" }]
-                        current: (page.root && page.root.dockMagnify) ? "on" : "off"
-                        onChose: k => { if (page.root && page.root.dockMagnify !== undefined) page.root.dockMagnify = (k === "on") }
-                    }
-                }
-            }
-
-            // ── GAPS: how far the shell stays off each output edge ──
-            CcSection {
-                width: col.width
-                root: page.root
-                title: I18n.tr("GAPS")
-                desc: I18n.tr("How far the shell stays off each output edge")
-
-                CcRow {
-                    root: page.root
-                    label: I18n.tr("Top")
-                    desc: I18n.tr("Lift the bar off the top edge")
-                    controlWidth: 104
-                    CcStepper {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        root: page.root
-                        suffix: "px"
-                        value: page.root && page.root.barGapTop !== undefined ? page.root.barGapTop : 0
-                        onCommit: v => { if (page.root && page.root.barGapTop !== undefined) page.root.barGapTop = v }
-                    }
-                }
-                CcRow {
-                    root: page.root
-                    label: I18n.tr("Bottom")
-                    desc: I18n.tr("Reserve extra room below the bar")
-                    controlWidth: 104
-                    CcStepper {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        root: page.root
-                        suffix: "px"
-                        value: page.root && page.root.barGapBottom !== undefined ? page.root.barGapBottom : 0
-                        onCommit: v => { if (page.root && page.root.barGapBottom !== undefined) page.root.barGapBottom = v }
-                    }
-                }
-                CcRow {
-                    root: page.root
-                    label: I18n.tr("Left")
-                    desc: I18n.tr("Inset the shell from the left edge")
-                    controlWidth: 104
-                    CcStepper {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        root: page.root
-                        suffix: "px"
-                        value: page.root && page.root.barGapLeft !== undefined ? page.root.barGapLeft : 0
-                        onCommit: v => { if (page.root && page.root.barGapLeft !== undefined) page.root.barGapLeft = v }
-                    }
-                }
-                CcRow {
-                    root: page.root
-                    label: I18n.tr("Right")
-                    desc: I18n.tr("Inset the shell from the right edge")
-                    controlWidth: 104
-                    CcStepper {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        root: page.root
-                        suffix: "px"
-                        value: page.root && page.root.barGapRight !== undefined ? page.root.barGapRight : 0
-                        onCommit: v => { if (page.root && page.root.barGapRight !== undefined) page.root.barGapRight = v }
-                    }
-                }
-            }
-
-            // ── BAR FORM (2×2 selectable silhouette cards) ──
-            CcSection {
-                width: col.width
-                root: page.root
-                title: I18n.tr("BAR FORM")
-                desc: I18n.tr("Pick the bar silhouette")
-
-                Grid {
-                    id: formGrid
-                    width: col.width
-                    columns: 2
-                    columnSpacing: page.gap
-                    rowSpacing: page.gap
-
-                    Repeater {
-                        model: page.formModel
-
-                        delegate: Rectangle {
-                            id: fcard
-                            required property var modelData
-                            readonly property bool on: page.activeForm === modelData.form
-                            readonly property bool hovered: fma.containsMouse
-
-                            width: (formGrid.width - formGrid.columnSpacing) / 2
-                            height: 96
-                            radius: page.rTile
-                            color: fcard.on
-                                ? Qt.rgba(page.cAccent.r, page.cAccent.g, page.cAccent.b, page.aActive)
-                                : fcard.hovered
-                                    ? Qt.rgba(page.cAccent.r, page.cAccent.g, page.cAccent.b, page.aHover)
-                                    : page.cIdle
-                            border.width: fcard.on ? 2 : 1
-                            border.color: (fcard.on || fcard.hovered) ? page.cAccent : page.cSep
-                            Behavior on color { ColorAnimation { duration: 120 } }
-
-                            Item {
-                                id: preview
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.top: parent.top
-                                anchors.leftMargin: 10
-                                anchors.rightMargin: 10
-                                anchors.topMargin: 8
-                                height: 42
-                                clip: true
-
-                                BarSilhouette {
-                                    anchors.fill: parent
-                                    root: page.root
-                                    form: fcard.modelData.form
-                                }
-                            }
-
-                            Row {
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.bottom: parent.bottom
-                                anchors.leftMargin: 10
-                                anchors.rightMargin: 10
-                                anchors.bottomMargin: 8
-                                spacing: 6
-
-                                Column {
-                                    width: parent.width - mark.width - parent.spacing
-                                    spacing: 1
-
-                                    UiText {
-                                        width: parent.width
-                                        text: I18n.tr(fcard.modelData.label)
-                                        color: fcard.on ? page.cAccent : page.cInk
-                                        elide: Text.ElideRight
-                                        font.family: page.fontMono
-                                        font.pixelSize: 12
-                                        font.weight: Font.DemiBold
+                                        UiText {
+                                            width: parent.width
+                                            text: I18n.tr(ftile.modelData.label).toUpperCase()
+                                            color: ftile.on ? Tokens.inkOnBone : Tokens.inkDim
+                                            elide: Text.ElideRight
+                                            font.family: Tokens.ui
+                                            font.pixelSize: Tokens.fSmall
+                                            font.weight: Font.Medium
+                                            font.letterSpacing: Tokens.trackLabel
+                                        }
+                                        UiText {
+                                            width: parent.width
+                                            text: I18n.tr(ftile.modelData.detail)
+                                            color: ftile.on ? Tokens.inkOnBoneDim : Tokens.inkFaint
+                                            elide: Text.ElideRight
+                                            font.family: Tokens.mono
+                                            font.pixelSize: Tokens.fTiny
+                                        }
                                     }
-                                    UiText {
-                                        width: parent.width
-                                        text: fcard.modelData.detail
-                                        color: page.cSumi
-                                        elide: Text.ElideRight
-                                        font.family: page.fontMono
-                                        font.pixelSize: 10
+
+                                    MouseArea {
+                                        id: fma
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: page.selectForm(ftile.modelData.form)
                                     }
                                 }
-                                UiText {
-                                    id: mark
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: fcard.on ? "●" : ""
-                                    color: page.cAccent
-                                    font.family: page.fontMono
-                                    font.pixelSize: 10
-                                }
-                            }
-
-                            MouseArea {
-                                id: fma
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: page.selectForm(fcard.modelData.form)
                             }
                         }
                     }
                 }
             }
 
-            // ── BAR ACCENT ──
-            CcSection {
-                width: col.width
-                root: page.root
-                title: I18n.tr("BAR ACCENT")
-                desc: I18n.tr("Tint the bar surface")
+            // ── 03 SURFACE ──
+            Entrance {
+                width: page.colW
+                index: 3
+                SettingCard {
+                    width: page.colW
+                    title: I18n.tr("04 SURFACE")
+                    kana: "\u8868\u9762"
 
-                CcSwatchGrid {
-                    root: page.root
-                    options: page.root ? page.root.barColorOptions : []
-                    current: page.root ? page.root.barColor : ""
-                    onChose: id => { if (page.root) page.root.barColor = id }
-                }
-            }
-
-            // ── GAP ANIMATION (the stream in the gaps) ──
-            CcSection {
-                width: col.width
-                root: page.root
-                title: I18n.tr("GAP ANIMATION")
-                desc: I18n.tr("The stream flowing in the gaps between widgets")
-
-                Grid {
-                    id: animGrid
-                    width: col.width
-                    columns: 3
-                    columnSpacing: page.gap
-                    rowSpacing: page.gap
-                    readonly property real cellW: (width - (columns - 1) * columnSpacing) / columns
-                    AnimTile { width: animGrid.cellW; caption: I18n.tr("Off");        on: page.curAnim === 0; onAct: page.setAnim(0) }
-                    AnimTile { width: animGrid.cellW; caption: I18n.tr("Stream");     on: page.curAnim === 1; onAct: page.setAnim(1) }
-                    AnimTile { width: animGrid.cellW; caption: I18n.tr("Surge");      on: page.curAnim === 2; onAct: page.setAnim(2) }
-                    AnimTile { width: animGrid.cellW; caption: I18n.tr("Bolt");       on: page.curAnim === 3; onAct: page.setAnim(3) }
-                    AnimTile { width: animGrid.cellW; caption: I18n.tr("Reactor");    on: page.curAnim === 7; onAct: page.setAnim(7) }
-                    AnimTile { width: animGrid.cellW; caption: I18n.tr("Quotes");     on: page.curAnim === 8; onAct: page.setAnim(8) }
-                }
-            }
-
-            // ── action tiles ──
-            Row {
-                width: col.width
-                spacing: page.gap
-
-                CcTile {
-                    width: (parent.width - parent.spacing) / 2
-                    root: page.root
-                    icon: "splitscreen"
-                    label: I18n.tr("Edit layout")
-                    sub: I18n.tr("Unlock the bar to drag & arrange")
-                    onActivated: {
-                        if (page.root) page.root.barUnlocked = true
-                        if (page.cc) page.cc.close()
+                    SettingRow {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        controlWidth: 54
+                        label: I18n.tr("Bar border")
+                        source: "shell.json"
+                        Sw {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            on: page.root ? page.root.barBorderEnabled === true : false
+                            onToggled: value => { if (page.root && page.root.barBorderEnabled !== undefined) page.root.barBorderEnabled = value }
+                        }
+                    }
+                    SettingRow {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        divider: true
+                        controlWidth: 58
+                        label: I18n.tr("Corners")
+                        unit: "px"
+                        value: String(page.root ? page.root.barCornerRadius : 0)
+                        source: "shell.json"
+                        Step {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            from: 0
+                            to: 40
+                            value: page.root ? page.root.barCornerRadius : 0
+                            onModified: v => { if (page.root && page.root.barCornerRadius !== undefined) page.root.barCornerRadius = v }
+                        }
+                    }
+                    SettingRow {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        divider: true
+                        controlWidth: 54
+                        label: I18n.tr("Panel + tooltip")
+                        source: "shell.json"
+                        Sw {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            on: page.root ? page.root.panelTooltipBorderEnabled === true : false
+                            onToggled: value => { if (page.root && page.root.panelTooltipBorderEnabled !== undefined) page.root.panelTooltipBorderEnabled = value }
+                        }
+                    }
+                    SettingRow {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        divider: true
+                        controlWidth: 54
+                        label: I18n.tr("Depth")
+                        desc: I18n.tr("Lift the bar and its panels")
+                        source: "shell.json"
+                        Sw {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            on: page.root ? page.root.barShadowEnabled === true : false
+                            onToggled: value => { if (page.root && page.root.barShadowEnabled !== undefined) page.root.barShadowEnabled = value }
+                        }
+                    }
+                    SettingRow {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        divider: true
+                        controlWidth: 54
+                        label: I18n.tr("Frost")
+                        source: "shell.json"
+                        Sw {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            on: page.root ? page.root.barFrostEnabled === true : false
+                            onToggled: value => { if (page.root && page.root.barFrostEnabled !== undefined) page.root.barFrostEnabled = value }
+                        }
                     }
                 }
-                CcTile {
-                    width: (parent.width - parent.spacing) / 2
-                    root: page.root
-                    icon: "restart_alt"
-                    label: I18n.tr("Restore layout")
-                    sub: I18n.tr("Reset slots, order & splits")
-                    onActivated: {
-                        if (page.root && page.root.resetAllBarLayouts) page.root.resetAllBarLayouts()
+            }
+
+            // ── 05 GAPS: how far the shell stays off each output edge ──
+            Entrance {
+                width: page.colW
+                index: 4
+                SettingCard {
+                    width: page.colW
+                    title: I18n.tr("05 GAPS")
+                    kana: "\u9593\u9694"
+
+                    SettingRow {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        controlWidth: 58
+                        label: I18n.tr("Top")
+                        unit: "px"
+                        value: String(page.root && page.root.barGapTop !== undefined ? page.root.barGapTop : 0)
+                        source: "shell.json"
+                        Step {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            from: 0
+                            to: 64
+                            stepBy: 1
+                            value: page.root && page.root.barGapTop !== undefined ? page.root.barGapTop : 0
+                            onModified: v => { if (page.root && page.root.barGapTop !== undefined) page.root.barGapTop = v }
+                        }
+                    }
+                    SettingRow {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        divider: true
+                        controlWidth: 58
+                        label: I18n.tr("Bottom")
+                        unit: "px"
+                        value: String(page.root && page.root.barGapBottom !== undefined ? page.root.barGapBottom : 0)
+                        source: "shell.json"
+                        Step {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            from: 0
+                            to: 64
+                            stepBy: 1
+                            value: page.root && page.root.barGapBottom !== undefined ? page.root.barGapBottom : 0
+                            onModified: v => { if (page.root && page.root.barGapBottom !== undefined) page.root.barGapBottom = v }
+                        }
+                    }
+                    SettingRow {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        divider: true
+                        controlWidth: 58
+                        label: I18n.tr("Left")
+                        unit: "px"
+                        value: String(page.root && page.root.barGapLeft !== undefined ? page.root.barGapLeft : 0)
+                        source: "shell.json"
+                        Step {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            from: 0
+                            to: 64
+                            stepBy: 1
+                            value: page.root && page.root.barGapLeft !== undefined ? page.root.barGapLeft : 0
+                            onModified: v => { if (page.root && page.root.barGapLeft !== undefined) page.root.barGapLeft = v }
+                        }
+                    }
+                    SettingRow {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        divider: true
+                        controlWidth: 58
+                        label: I18n.tr("Right")
+                        unit: "px"
+                        value: String(page.root && page.root.barGapRight !== undefined ? page.root.barGapRight : 0)
+                        source: "shell.json"
+                        Step {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            from: 0
+                            to: 64
+                            stepBy: 1
+                            value: page.root && page.root.barGapRight !== undefined ? page.root.barGapRight : 0
+                            onModified: v => { if (page.root && page.root.barGapRight !== undefined) page.root.barGapRight = v }
+                        }
+                    }
+                }
+            }
+
+            // ── 05 ACCENT: the bar's data colour, so the swatches keep their hue ──
+            Entrance {
+                width: page.colW
+                index: 5
+                SettingCard {
+                    width: page.colW
+                    title: I18n.tr("06 ACCENT")
+                    kana: "\u8272"
+
+                    // Following the wallpaper is the honest default: matugen already
+                    // derives an accent from the image, and "accent" is a real stored
+                    // value, not a fixed slot pretending to track the picture.
+                    SettingRow {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        controlWidth: 54
+                        label: I18n.tr("Follow wallpaper")
+                        desc: I18n.tr("Use the wallpaper's accent")
+                        source: "shell.json"
+                        Sw {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            on: page.root ? page.root.barColorIsAccent : false
+                            // turning it off restores the slot that was pinned before,
+                            // not a hardcoded colour01: the switch must not eat a choice
+                            onToggled: v => { if (page.root) page.root.barColor = v ? "accent" : page.pinnedSlot }
+                        }
+                    }
+                    SettingRow {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        divider: true
+                        block: true
+                        label: I18n.tr("Slot")
+                        desc: I18n.tr("Or pin one palette colour")
+                        source: "shell.json"
+                        enabled: page.root ? !page.root.barColorIsAccent : true
+                        CcSwatchGrid {
+                            id: accentGrid
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            root: page.root
+                            tk: page.tk
+                            options: page.root ? page.root.barColorOptions : []
+                            current: page.root ? page.root.barColor : ""
+                            onChose: id => { if (page.root) page.root.barColor = id }
+                        }
                     }
                 }
             }
         }
     }
 
-    CcScrollRail { root: page.root; flick: flick; z: 5 }
+    CcScrollRail { root: page.root; tk: page.tk; flick: flick; z: 5 }
 }

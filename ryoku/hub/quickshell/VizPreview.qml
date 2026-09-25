@@ -123,12 +123,36 @@ Item {
         for (var i = 0; i < n; i++) sum += root.levelAt(i);
         return n > 0 ? sum / n : 0;
     }
-    // the hub carries no accent, so the spectrum is drawn in ink alone: eight
-    // stops from dim ink to full ink give the shader a monochrome ramp to sweep.
+    // Colour follows the pinned choice so the preview matches the desktop: a
+    // gradient sweeps colour into colour2, a single pin walks bass->treble, and
+    // with neither pinned the hub draws in ink alone (app content carries no
+    // accent), eight stops from dim to full ink for the shader to sweep.
+    readonly property string vColor: "" + root.pick("color", "")
+    readonly property string vColor2: "" + root.pick("color2", "")
+    readonly property bool vHasColor: /^#[0-9a-fA-F]{6}$/.test(root.vColor)
+    readonly property bool vHasColor2: /^#[0-9a-fA-F]{6}$/.test(root.vColor2)
+    readonly property bool vGradient: root.pick("gradient", false) === true && root.vHasColor && root.vHasColor2
     readonly property var vRamp: {
-        var a = Tokens.inkDim, b = Tokens.ink, out = [];
-        for (var i = 0; i < 8; i++) {
-            var t = i / 7;
+        var out = [];
+        var i, t;
+        if (root.vGradient) {
+            var g0 = Qt.color(root.vColor), g1 = Qt.color(root.vColor2);
+            for (i = 0; i < 8; i++)
+                out.push(Qt.tint(g0, Qt.rgba(g1.r, g1.g, g1.b, i / 7)));
+            return out;
+        }
+        if (root.vHasColor) {
+            var base = Qt.color(root.vColor);
+            for (i = 0; i < 8; i++) {
+                t = i / 7;
+                var f = 1 + (t - 0.5) * 0.36;
+                out.push(f >= 1 ? Qt.lighter(base, f) : Qt.darker(base, 1 / f));
+            }
+            return out;
+        }
+        var a = Tokens.inkDim, b = Tokens.ink;
+        for (i = 0; i < 8; i++) {
+            t = i / 7;
             out.push(Qt.rgba(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t,
                              a.b + (b.b - a.b) * t, 1));
         }
@@ -156,7 +180,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
         }
         Text {
-            text: "PREVIEW_"
+            text: I18n.tr("PREVIEW_")
             color: Tokens.inkMuted
             font.family: Tokens.mono; font.pixelSize: Tokens.fMicro
             font.letterSpacing: Tokens.trackLabel
@@ -225,7 +249,7 @@ Item {
         Text {
             visible: root.vEnabled
             anchors { bottom: parent.bottom; horizontalCenter: parent.horizontalCenter; bottomMargin: Tokens.s2 }
-            text: "DRAG TO PLACE"
+            text: I18n.tr("DRAG TO PLACE")
             color: Tokens.inkFaint
             font.family: Tokens.mono; font.pixelSize: Tokens.fMicro
             font.letterSpacing: Tokens.trackLabel
@@ -256,7 +280,7 @@ Item {
     Text {
         anchors.centerIn: stage
         visible: !root.vEnabled
-        text: "VISUALIZER OFF"
+        text: I18n.tr("VISUALIZER OFF")
         color: Tokens.inkMuted
         font.family: Tokens.ui; font.pixelSize: Tokens.fMicro
         font.weight: Font.Medium; font.letterSpacing: 2

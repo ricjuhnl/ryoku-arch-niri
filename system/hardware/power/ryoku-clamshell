@@ -13,10 +13,12 @@
 # saw no new lid event, so without this the box would sit awake with the lid
 # closed (the "cooking in a bag" case).
 #
-# Display policy (the `lid` subcommand, driven by Hyprland's lid-switch bind in
-# hypr/modules/lid.lua): on lid close with an external present, disable the
-# internal panel; on open, re-enable it and re-run autoscale. Guarded so the
-# internal is never disabled when it is the only display (no zero-monitor trap).
+# Display policy (the `lid` subcommand, driven by the compositor's lid-switch
+# bind): on lid close with an external present, switch the internal panel off
+# through the window-manager seam (output.enable); on open, switch it back on and
+# re-run autoscale. Guarded so the internal is never switched off when it is the
+# only display (no zero-monitor trap). Both providers carry output.enable, so
+# this works the same wherever the compositor routes its lid switch here.
 #
 # Laptop-only: a `daemon` start on a desktop exits at once (like ryoku-idle).
 # Env overrides mirror ryoku-hw-laptop, for tests.
@@ -31,8 +33,23 @@ LID_STATE_GLOB="${RYOKU_LID_STATE_GLOB:-/proc/acpi/button/lid/*/state}"
 # Internal panels + non-display connectors. Everything else that reports
 # "connected" is an external display (HDMI-A-*, DP-*, ...).
 INTERNAL_RE='^(eDP|LVDS|DSI|Virtual|Writeback)'
+# The real internal laptop panel(s) the lid physically covers, the outputs the
+# lid subcommand switches. Narrower than INTERNAL_RE, which also keeps Virtual
+# and Writeback out of the external count but is never a panel to switch.
+PANEL_RE='^(eDP|LVDS|DSI)'
 
 log() { printf 'ryoku-clamshell: %s\n' "$*"; }
+
+# The window manager is reached only through the seam, never named. Its
+# output.enable action powers a single output on or off by connector; both
+# providers carry it, so no capability probe gates the call. A missing ryoku
+# (old ISO, partial install) makes it a harmless no-op.
+ryoku_bin="${RYOKU_BIN-$(command -v ryoku || true)}"
+
+ryoku_wm_output() {  # <connector> on|off
+  [[ -n $ryoku_bin && -x $ryoku_bin ]] || return 0
+  "$ryoku_bin" wm act output.enable "$1" "$2" >/dev/null 2>&1 || true
+}
 
 hw_laptop() {
   if command -v ryoku-hw-laptop >/dev/null 2>&1; then
@@ -160,36 +177,44 @@ run_daemon() {
   done
 }
 
-# --- display side: called by the Hyprland lid-switch bind ---------------------
-internal_names() {   # $1 = "all" to include disabled outputs
-  local scope=${1:-}
-  hyprctl monitors ${scope:+all} -j 2>/dev/null \
-    | jq -r --arg re "$INTERNAL_RE" '.[] | select(.name | test($re)) | .name' 2>/dev/null
+# --- display side: called by the compositor's lid-switch bind -----------------
+# Connected internal panels, read from DRM so the enumeration holds under any
+# compositor and names the exact connector the seam's output.enable expects (the
+# card*-<name> connector carries the same output name). Reads HPD status, not
+# DPMS, so a lid-blanked panel that is still wired still counts.
+internal_panels() {
+  local c b n
+  for c in "$DRM_DIR"/card*-*; do
+    [[ -r $c/status ]] || continue
+    b=${c##*/}; n=${b#card*-}
+    [[ $n =~ $PANEL_RE ]] || continue
+    [[ $(<"$c/status") == connected ]] && printf '%s\n' "$n"
+  done
 }
 
 cmd_lid() {
   local action="${1:-}"
-  command -v hyprctl >/dev/null 2>&1 || return 0
+  # Switching the internal panel off on lid close is a live per-output power
+  # change, carried by the seam's output.enable action so it runs the same on
+  # every compositor. A missing ryoku just no-ops the switch.
   case "$action" in
     close)
       # only hand off to an external; with no external this is a normal lid
       # close (logind suspends) and there is nothing to switch to.
-      local ext name
-      ext=$(hyprctl monitors -j 2>/dev/null \
-        | jq -r --arg re "$INTERNAL_RE" '[.[] | select(.name | test($re) | not)] | length' 2>/dev/null || echo 0)
-      [[ ${ext:-0} -gt 0 ]] || return 0
-      while IFS= read -r name; do
-        [[ -n $name ]] || continue
-        hyprctl keyword monitor "$name, disable" >/dev/null 2>&1 || true
-      done < <(internal_names)
-      ;;
-    open)
-      # re-enable the internal panel, then let autoscale restore scale/position.
+      external_connected || return 0
       local name
       while IFS= read -r name; do
         [[ -n $name ]] || continue
-        hyprctl keyword monitor "$name, preferred, auto, auto" >/dev/null 2>&1 || true
-      done < <(internal_names all)
+        ryoku_wm_output "$name" off
+      done < <(internal_panels)
+      ;;
+    open)
+      # switch the internal panel back on, then let autoscale restore its layout.
+      local name
+      while IFS= read -r name; do
+        [[ -n $name ]] || continue
+        ryoku_wm_output "$name" on
+      done < <(internal_panels)
       command -v ryoku-monitor >/dev/null 2>&1 && ryoku-monitor autoscale >/dev/null 2>&1 || true
       ;;
     *)
@@ -218,8 +243,8 @@ Usage: ryoku-clamshell [daemon|lid <open|close>|status]
 
 daemon   watch power + displays and hold a lid-switch inhibitor while on AC
          with an external display (laptop-only; a desktop exits at once)
-lid      switch the internal panel off (close) / on (open); the Hyprland
-         lid-switch bind calls this
+lid      switch the internal panel off (close) / on (open) through the seam; the
+         compositor's lid-switch bind calls this
 status   print device class, AC, external display, lid, and inhibitor state
 
 Env:

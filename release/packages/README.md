@@ -23,6 +23,10 @@ repo. Packages publish only from `main` release tags, never from `unstable-dev`.
   `hyprpm.toml` and checks out the commit paired with the running Hyprland), so
   they track the shipped compositor with no manual pin bumps. Off until enabled
   in Ryoku Settings.
+- `xwayland-satellite` -- the X11 bridge niri spawns for Xwayland apps, built a
+  few commits past `v0.8.2` because that release regressed override-redirect
+  popup focus (Steam and Wine menus close on sight under niri). A pinned commit,
+  not a monorepo build; a later official `0.8.3` sorts above it and takes over.
 - `ryoku-desktop` -- the umbrella. Depends on the packages above plus the user-facing
   desktop runtime, lays the base configuration under `/usr/share/ryoku/config`,
   and installs the helper scripts (`ryoku-cmd-*`, the hardware `ryoku-*`,
@@ -38,15 +42,14 @@ full checkout. The Go binaries and the QML plugin are built into `$srcdir`, so
 the source tree is never modified, and `makepkg --clean` removes `$srcdir` and
 `$pkgdir` afterward.
 
-The `gpk`, `awww`, and `ryoku-keyring` PKGBUILDs are the exceptions: they
-fetch a pinned upstream artifact (a release binary, a git commit, and the
-release key material, respectively) rather than building from the checkout.
+The `gpk` and `ryoku-keyring` PKGBUILDs are the exceptions: they fetch a pinned
+upstream artifact (a release binary and the release key material, respectively)
+rather than building from the checkout.
 
 makedepends across the set: `go` (ryoku-shell, ryoku-hub, ryoku),
 `cmake ninja qt6-shadertools qt6-declarative` (ryoku-blobs), and `rust` + `git`
-(awww, built from a pinned upstream git commit with cargo), on top of the assumed
-`base-devel`. `ryoku-hub` (`github.com/BurntSushi/toml`) and `awww` (cargo
-fetches its crates) both need network at build time.
+(hyprland-preview-share-picker, asusctl), on top of the assumed `base-devel`.
+`ryoku-hub` (`github.com/BurntSushi/toml`) needs network at build time.
 
 ## Configs and materialize
 

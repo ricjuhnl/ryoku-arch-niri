@@ -1,4 +1,5 @@
 //@ pragma DefaultEnv QSG_RENDER_LOOP = threaded
+pragma ComponentBehavior: Bound
 
 import QtQuick
 import Quickshell
@@ -25,11 +26,17 @@ Item {
     // own surface (Placer), and rides the top layer so it is not buried while
     // being aimed.
     property bool placing: false
+    property bool suppressed: false
     signal placingDone
 
     readonly property bool active: root.mode !== "off"
     readonly property bool placeable: root.placing && root.active
     readonly property bool raised: root.mode === "overlay" || root.placeable
+
+    // Keep the shared spectrum running while this look is being aimed, even under
+    // Power Saver or silence, so it stays visible to place; released when done.
+    onPlaceableChanged: Spectrum.placementHolds += root.placeable ? 1 : -1
+    Component.onDestruction: if (root.placeable) Spectrum.placementHolds -= 1
 
     // cava runs whenever the visualiser is enabled: gating on "audio playing"
     // needs a probe that is either broken or costs a periodic graph dump, while
@@ -37,14 +44,15 @@ Item {
     Binding {
         target: Spectrum
         property: "active"
-        value: root.active
+        value: root.active || root.suppressed
     }
 
-    // configured band count; changing it restarts cava with the new bars.
+    // one shared cava for every instance, at the largest band count any of them
+    // wants; each Motion resamples down. changing it restarts cava.
     Binding {
         target: Spectrum
         property: "bars"
-        value: Config.bars
+        value: Config.maxBars
     }
 
     // cava's framerate follows the render ceiling: no point sampling faster than
@@ -55,19 +63,19 @@ Item {
         value: Config.fps
     }
 
-    // the scope look draws the actual playback waveform; capture the monitor
-    // only while that look is selected and the visualiser is on.
+    // the scope look draws the actual playback waveform; capture the monitor only
+    // while some instance is the line look and the visualiser is on.
     Binding {
         target: Waveform
         property: "active"
-        value: root.active && Config.styleId === "line"
+        value: root.active && Config.anyLine
     }
 
     PanelWindow {
         id: win
 
         screen: root.screen
-        visible: root.active
+        visible: root.active && !root.suppressed
         color: "transparent"
 
         // The curtain hangs off the bar, so its surface honours the bar's
@@ -88,19 +96,37 @@ Item {
 
         anchors { top: true; left: true; right: true; bottom: true }
 
-        VisualizerView {
-            id: view
+        // One view per instance: the primary plus every extra, each painting its
+        // own look on the shared surface.
+        Item {
             anchors.fill: parent
+            Repeater {
+                id: rep
+                model: Config.count
+                delegate: VisualizerView {
+                    id: vizView
+                    required property int index
+                    anchors.fill: parent
+                    cfg: VizItem { data: Config.dataAt(vizView.index) }
+                }
+            }
         }
     }
 
-    // The placement overlay only exists while a look is being aimed.
+    // The active view, for the placement overlay to frame and colour-match.
+    readonly property Item activeView: {
+        rep.count;   // rebuild the binding when the delegates change
+        return rep.itemAt(Config.active);
+    }
+
+    // The placement overlay only exists while a look is being aimed; it tunes the
+    // active instance.
     Loader {
-        active: root.placeable
+        active: root.placeable && root.activeView !== null
         sourceComponent: Placer {
             screen: root.screen
-            box: view.boxRect
-            guide: view.guide
+            box: root.activeView.boxRect
+            guide: root.activeView.guide
             onDone: root.placingDone()
         }
     }

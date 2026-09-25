@@ -9,6 +9,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import QtQuick
+import Ryoku.Ui.Singletons
 import "panels"
 import "controlcenter"
 import "../../../../services/lib/screens.js" as Screens
@@ -41,6 +42,7 @@ Item {
     // stack a second BarSlot on the same output. A genuinely new ShellScreen still
     // makes Variants destroy the old BarSlot and instantiate a fresh one.
     readonly property var barScreens: Screens.uniqueByName(Quickshell.screens)
+        .filter(screen => Tokens.barEnabledFor(screen.name))
 
     function lifecycleReady() {
         if (!theme._widgetsLoaded || barScreens.length === 0) return false
@@ -226,18 +228,6 @@ Item {
         model: root.barScreens
 
         delegate: Component {
-            DockSlot {
-                required property var modelData
-                root: theme
-                screen: modelData
-            }
-        }
-    }
-
-    Variants {
-        model: root.barScreens
-
-        delegate: Component {
             PopupDismissLayer {
                 required property var modelData
 
@@ -262,10 +252,11 @@ Item {
     NetworkPanel { root: theme }
     BluetoothPanel { root: theme }
     BatteryPanel { root: theme }
+    PluginPanel { root: theme }
     BrightnessPanel { root: theme }
     MprisPanel { root: theme }
     WorkspacePanel { root: theme }
-    ControlCenter { root: theme }
+    ControlCenter { id: controlCenter; root: theme }
     TrayMenu { root: theme }
 
     // Picker variants: only the selected pickerStyle is instantiated.
@@ -275,4 +266,24 @@ Item {
     LazyLoader { active: theme.mediaBrowserVisible && (theme.pickerStyle === "tanzaku" || theme.pickerStyle === "");  MediaBrowserPanel        { root: theme } }
     LazyLoader { active: theme.mediaBrowserVisible && theme.pickerStyle === "hearthstone";                             MediaBrowserHearthstone  { root: theme } }
     LazyLoader { active: theme.mediaBrowserVisible && theme.pickerStyle === "carousel";                                MediaBrowserCarousel     { root: theme } }
+
+    // The bar's own IPC surface (contract 5): open QS Bar Settings on a route
+    // (a keybind or `ryoku-shell bar settings`), close it (`bar settings close`,
+    // so a script can put it away), and read the live layout as JSON.
+    // settings() drives the same ControlCenter.open the logo uses.
+    IpcHandler {
+        target: "qsbar"
+        function settings(route: string): void {
+            if (route === "close") controlCenter.close()
+            else controlCenter.open(route)
+        }
+        function layout(): string { return JSON.stringify(theme.barLayout) }
+    }
+
+    // Theme.openBarSettings() (the contract-4 root API) requests the panel; the
+    // panel lives here, so wire the request to the ControlCenter instance.
+    Connections {
+        target: theme
+        function onBarSettingsOpenRequested(route) { controlCenter.open(route) }
+    }
 }

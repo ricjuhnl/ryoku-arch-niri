@@ -266,13 +266,177 @@ func TestTemplateGroup(t *testing.T) {
 	cases := map[string]string{
 		"gtk3": "gtk", "gtk4": "gtk",
 		"vesktop": "discord", "equibop": "discord",
-		"qt6ct": "qt", "qt5ct": "qt5", "hypr": "hyprland",
+		"qt6ct": "qt", "kde": "qt", "hypr": "hyprland",
 		"kitty": "kitty", "btop": "btop", "papirus": "papirus", "cava": "cava",
 	}
 	for block, want := range cases {
 		if got := templateGroup(block); got != want {
 			t.Errorf("templateGroup(%q) = %q, want %q", block, got, want)
 		}
+	}
+}
+
+// TestApplyKdeColors is the merge contract: the colour groups come from the
+// render, and everything else in kdeglobals is the user's and survives. The
+// fixture carries the two shapes a general INI reader gets wrong, the
+// [Colors:Header][Inactive] group name and case-sensitive keys, because
+// mangling either would silently drop a user's settings.
+func TestApplyKdeColors(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	mustWrite := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mustWrite(kdeglobalsPath(), `[General]
+ColorScheme=SomethingElse
+font=Comic Sans,11
+
+[Icons]
+Theme=breeze-dark
+
+[KDE]
+widgetStyle=Darkly
+
+[Colors:View]
+BackgroundNormal=#ffffff
+
+[Colors:Header][Inactive]
+BackgroundNormal=#ffffff
+`)
+	mustWrite(matugenKdeColorsPath(), `[Colors:View]
+BackgroundNormal=#101010
+BackgroundAlternate=#181818
+
+[Colors:Header][Inactive]
+BackgroundNormal=#101010
+
+[WM]
+activeBackground=#202020
+`)
+
+	applyKdeColors()
+
+	b, err := os.ReadFile(kdeglobalsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+
+	for _, want := range []string{
+		"font=Comic Sans,11", // the user's font
+		"Theme=breeze-dark",  // the user's icon theme
+		"widgetStyle=Darkly", // the user's widget style
+		"ColorScheme=Ryoku",  // the one General key the palette owns
+		"BackgroundNormal=#101010",
+		"BackgroundAlternate=#181818",
+		"[Colors:Header][Inactive]",
+		"activeBackground=#202020",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("kdeglobals missing %q; got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "#ffffff") {
+		t.Errorf("stale colour survived the merge; got:\n%s", out)
+	}
+	if strings.Contains(out, "ColorScheme=SomethingElse") {
+		t.Errorf("stale scheme name survived the merge; got:\n%s", out)
+	}
+}
+
+// TestApplyKdeColorsWithoutKdeglobals covers the machine that has never run a
+// KDE app: no kdeglobals yet, so the merge writes a colours-only one instead of
+// skipping.
+func TestApplyKdeColorsWithoutKdeglobals(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	path := matugenKdeColorsPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("[Colors:View]\nBackgroundNormal=#101010\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(kdeglobalsPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	applyKdeColors()
+
+	b, err := os.ReadFile(kdeglobalsPath())
+	if err != nil {
+		t.Fatalf("kdeglobals not created: %v", err)
+	}
+	if !strings.Contains(string(b), "BackgroundNormal=#101010") {
+		t.Errorf("colours not written; got:\n%s", b)
+	}
+}
+
+// TestApplyKdeColorsForeignSectionSurvives proves the merge only claims the
+// colour groups: a section Ryoku knows nothing about, and the user's font,
+// come through byte for byte while the palette lands.
+func TestApplyKdeColorsForeignSectionSurvives(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	mustWrite := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mustWrite(kdeglobalsPath(), `[General]
+font=Comic Sans,11
+
+[SomeSection]
+key=value
+
+[Colors:View]
+BackgroundNormal=#ffffff
+`)
+	mustWrite(matugenKdeColorsPath(), `[Colors:View]
+BackgroundNormal=#101010
+`)
+
+	applyKdeColors()
+
+	b, err := os.ReadFile(kdeglobalsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+
+	for _, want := range []string{
+		"[SomeSection]",
+		"key=value",
+		"font=Comic Sans,11",
+		"BackgroundNormal=#101010",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("kdeglobals missing %q; got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "#ffffff") {
+		t.Errorf("stale colour survived the merge; got:\n%s", out)
 	}
 }
 
@@ -320,10 +484,10 @@ output_path = "~/g3"
 output_path = "~/g4"
 [templates.vesktop]
 output_path = "~/v"
-[templates.qt5ct]
-output_path = "~/q5"
+[templates.kde]
+output_path = "~/kde"
 `
-	on := map[string]bool{"gtk": false, "discord": true, "qt5": true}
+	on := map[string]bool{"gtk": false, "discord": true, "qt": true}
 	got := filterMatugenConfig(apps, func(g string) bool { return on[g] })
 	if strings.Contains(got, "[templates.gtk3]") || strings.Contains(got, "[templates.gtk4]") {
 		t.Errorf("gtk disabled but a gtk block rendered:\n%s", got)
@@ -331,29 +495,23 @@ output_path = "~/q5"
 	if !strings.Contains(got, "[templates.vesktop]") {
 		t.Errorf("discord enabled but vesktop dropped:\n%s", got)
 	}
-	if !strings.Contains(got, "[templates.qt5ct]") {
-		t.Errorf("qt5 enabled but qt5ct dropped:\n%s", got)
+	if !strings.Contains(got, "[templates.kde]") {
+		t.Errorf("qt enabled but the kde block dropped:\n%s", got)
 	}
 }
 
-// TestMatugenReload proves the toolkit reload actions fire with the right argv,
-// through the process shim so the test never touches the desktop: the libadwaita
-// colour-scheme preference tracks the mode, the gtk-theme name flips off and back
-// to force a stylesheet re-read, and kitty gets SIGUSR1.
+// TestMatugenReload proves the daemon owns the three GTK-facing gsettings keys
+// on a retint, through the process shim so the test never touches the desktop.
+// For (dark, adw, accent on): color-scheme tracks the mode, accent-color tracks
+// the palette's primary, gtk-theme lands on the dark adw-gtk3 variant flipped
+// through a real placeholder (never the empty string), and kitty gets SIGUSR1.
+// The light run re-resolves the light variant.
 func TestMatugenReload(t *testing.T) {
-	var got [][]string
-	origRun, origOut := runCommand, runCommandOutput
-	t.Cleanup(func() { runCommand, runCommandOutput = origRun, origOut })
-	runCommand = func(name string, args ...string) error {
-		got = append(got, append([]string{name}, args...))
-		return nil
-	}
-	runCommandOutput = func(name string, args ...string) ([]byte, error) {
-		return []byte("'Adwaita-dark'\n"), nil
-	}
-
+	got := gtkReloadEnv(t,
+		`{"gtkTheme":"adw","gnomeAccent":true}`,
+		`{"primary":"#ffb59b"}`)
 	has := func(want ...string) bool {
-		for _, c := range got {
+		for _, c := range *got {
 			if slices.Equal(c, want) {
 				return true
 			}
@@ -363,20 +521,130 @@ func TestMatugenReload(t *testing.T) {
 
 	matugenReload("dark")
 	if !has("gsettings", "set", "org.gnome.desktop.interface", "color-scheme", "prefer-dark") {
-		t.Errorf("dark: color-scheme prefer-dark not set; got %v", got)
+		t.Errorf("dark: color-scheme prefer-dark not set; got %v", *got)
 	}
-	if !has("gsettings", "set", "org.gnome.desktop.interface", "gtk-theme", "") ||
-		!has("gsettings", "set", "org.gnome.desktop.interface", "gtk-theme", "Adwaita-dark") {
-		t.Errorf("dark: gtk-theme not flipped off and back; got %v", got)
+	if !has("gsettings", "set", "org.gnome.desktop.interface", "accent-color", "orange") {
+		t.Errorf("dark: accent-color not tracked to the salmon primary's orange; got %v", *got)
+	}
+	if !has("gsettings", "set", "org.gnome.desktop.interface", "gtk-theme", "Adwaita") ||
+		!has("gsettings", "set", "org.gnome.desktop.interface", "gtk-theme", "adw-gtk3-dark") {
+		t.Errorf("dark: gtk-theme not flipped through a placeholder to adw-gtk3-dark; got %v", *got)
+	}
+	if has("gsettings", "set", "org.gnome.desktop.interface", "gtk-theme", "") {
+		t.Errorf("dark: nudge passed an empty gtk-theme; got %v", *got)
 	}
 	if !has("pkill", "-USR1", "-x", "kitty") {
-		t.Errorf("dark: kitty SIGUSR1 not sent; got %v", got)
+		t.Errorf("dark: kitty SIGUSR1 not sent; got %v", *got)
 	}
 
-	got = nil
+	*got = nil
 	matugenReload("light")
 	if !has("gsettings", "set", "org.gnome.desktop.interface", "color-scheme", "prefer-light") {
-		t.Errorf("light: color-scheme prefer-light not set; got %v", got)
+		t.Errorf("light: color-scheme prefer-light not set; got %v", *got)
+	}
+	if !has("gsettings", "set", "org.gnome.desktop.interface", "gtk-theme", "adw-gtk3") {
+		t.Errorf("light: gtk-theme not re-resolved to the light adw-gtk3 variant; got %v", *got)
+	}
+}
+
+// TestMatugenReloadSystemNoGtkTheme proves gtkTheme "system" hands gtk-theme back
+// to the user: the reload writes no gtk-theme at all (not even a nudge flip), and
+// with gnomeAccent off it writes no accent-color either, while color-scheme and
+// kitty still fire.
+func TestMatugenReloadSystemNoGtkTheme(t *testing.T) {
+	got := gtkReloadEnv(t,
+		`{"gtkTheme":"system","gnomeAccent":false}`,
+		`{"primary":"#3584e4"}`)
+	matugenReload("light")
+	for _, c := range *got {
+		if len(c) >= 5 && c[0] == "gsettings" && c[4] == "gtk-theme" {
+			t.Errorf("system: wrote gtk-theme %v", c)
+		}
+		if len(c) >= 5 && c[0] == "gsettings" && c[4] == "accent-color" {
+			t.Errorf("accent off: wrote accent-color %v", c)
+		}
+	}
+	has := func(want ...string) bool {
+		for _, c := range *got {
+			if slices.Equal(c, want) {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("gsettings", "set", "org.gnome.desktop.interface", "color-scheme", "prefer-light") {
+		t.Errorf("system: color-scheme still owned by the daemon; got %v", *got)
+	}
+	if !has("pkill", "-USR1", "-x", "kitty") {
+		t.Errorf("system: kitty SIGUSR1 not sent; got %v", *got)
+	}
+}
+
+// TestResolveGtkTheme pins contract C3's gtkTheme -> gsettings name mapping by
+// mode: adw (the default, and what an absent or unknown value reads as) resolves
+// the adw-gtk3 variants, adwaita the stock Adwaita variants, and system resolves
+// "" so the daemon never writes gtk-theme.
+func TestResolveGtkTheme(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	ryoku := filepath.Join(home, ".config", "ryoku")
+	if err := os.MkdirAll(ryoku, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(ryoku, "theme.json")
+	cases := []struct {
+		theme       string // "" means write no theme.json at all
+		dark, light string
+	}{
+		{`{"gtkTheme":"adw"}`, "adw-gtk3-dark", "adw-gtk3"},
+		{`{"gtkTheme":"adwaita"}`, "Adwaita-dark", "Adwaita"},
+		{`{"gtkTheme":"system"}`, "", ""},
+		{`{"gtkTheme":"nonsense"}`, "adw-gtk3-dark", "adw-gtk3"},
+		{`{}`, "adw-gtk3-dark", "adw-gtk3"},
+		{"", "adw-gtk3-dark", "adw-gtk3"},
+	}
+	for _, c := range cases {
+		if c.theme == "" {
+			_ = os.Remove(path)
+		} else {
+			writeFile(t, path, c.theme)
+		}
+		if got := resolveGtkTheme("dark"); got != c.dark {
+			t.Errorf("%s dark: resolveGtkTheme = %q, want %q", c.theme, got, c.dark)
+		}
+		if got := resolveGtkTheme("light"); got != c.light {
+			t.Errorf("%s light: resolveGtkTheme = %q, want %q", c.theme, got, c.light)
+		}
+	}
+}
+
+// TestNearestGnomeAccent proves the primary -> named-accent match is by hue with
+// a neutral fallback (contract C5): a warm salmon reads as orange (not the dark
+// gold "yellow" a raw a/b distance would pick), clear blue and purple hit their
+// own names, a near-grey has no reliable hue and lands on slate (GNOME's neutral
+// accent), and every named accent maps to itself. A non-hex value returns ok
+// false so the caller skips the write.
+func TestNearestGnomeAccent(t *testing.T) {
+	probes := []struct{ hex, want string }{
+		{"#ffb59b", "orange"},
+		{"#3584e4", "blue"},
+		{"#9141ac", "purple"},
+		{"#8a8f98", "slate"},
+	}
+	for _, p := range probes {
+		got, ok := nearestGnomeAccent(p.hex)
+		if !ok || got != p.want {
+			t.Errorf("nearestGnomeAccent(%s) = %q,%v; want %q,true", p.hex, got, ok, p.want)
+		}
+	}
+	for _, acc := range gnomeNamedAccents {
+		if got, ok := nearestGnomeAccent(acc[1]); !ok || got != acc[0] {
+			t.Errorf("accent %s (%s) did not map to itself: got %q,%v", acc[0], acc[1], got, ok)
+		}
+	}
+	if _, ok := nearestGnomeAccent("not-a-colour"); ok {
+		t.Errorf("non-hex primary should return ok=false")
 	}
 }
 
@@ -399,22 +667,28 @@ func TestApplyFont(t *testing.T) {
 		return false
 	}
 
-	applyFont("Inter")
-	if !has("gsettings", "set", "org.gnome.desktop.interface", "font-name", "Inter 11") {
-		t.Errorf("font-name not set to Inter; got %v", got)
+	applyFont([]byte(`{"fontFamily":"Maple Mono NF","fontSize":13}`))
+	if !has("gsettings", "set", "org.gnome.desktop.interface", "font-name", "Maple Mono NF 13") {
+		t.Errorf("font-name not set to Maple Mono NF 13; got %v", got)
+	}
+	if !has("gsettings", "set", "org.gnome.desktop.interface", "monospace-font-name", "Maple Mono NF 13") {
+		t.Errorf("the one system font must also drive monospace-font-name; got %v", got)
 	}
 
 	got = nil
-	applyFont("")
+	applyFont([]byte(`{}`))
 	if !has("gsettings", "set", "org.gnome.desktop.interface", "font-name", "Space Grotesk 11") {
-		t.Errorf("empty font did not fall back to Space Grotesk; got %v", got)
+		t.Errorf("empty font did not fall back to Space Grotesk 11; got %v", got)
+	}
+	if !has("gsettings", "set", "org.gnome.desktop.interface", "monospace-font-name", "SpaceMono Nerd Font 11") {
+		t.Errorf("empty mono did not fall back to SpaceMono Nerd Font 11; got %v", got)
 	}
 
-	if fontSig([]byte(`{"fontFamily":"Fira Sans"}`)) != "Fira Sans" {
-		t.Errorf("fontSig did not read fontFamily")
+	if fontSig([]byte(`{"fontFamily":"Fira Sans","fontSize":12}`)) != "Fira Sans\x1f12" {
+		t.Errorf("fontSig did not compose family/size")
 	}
-	if fontSig([]byte(`{}`)) != "" {
-		t.Errorf("fontSig should be empty when the key is absent")
+	if fontSig([]byte(`{}`)) != "\x1f0" {
+		t.Errorf("fontSig should be the empty composite when keys are absent")
 	}
 }
 
@@ -711,6 +985,44 @@ func writeFile(t *testing.T, path, body string) {
 	}
 }
 
+// gtkReloadEnv sets an isolated HOME carrying a theme.json (the gtkTheme /
+// gnomeAccent knobs) and a colors.json (the palette's primary), then shims
+// runCommand to record every gsettings / pkill invocation so the GTK-facing
+// reload is observable without touching the desktop. An empty json argument
+// writes no file, exercising the absent-file defaults.
+func gtkReloadEnv(t *testing.T, themeJSON, colorsJSON string) *[][]string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	cfg := filepath.Join(home, ".config", "ryoku")
+	cache := filepath.Join(home, ".cache", "ryoku")
+	if err := os.MkdirAll(cfg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if themeJSON != "" {
+		writeFile(t, filepath.Join(cfg, "theme.json"), themeJSON)
+	}
+	if colorsJSON != "" {
+		writeFile(t, filepath.Join(cache, "colors.json"), colorsJSON)
+	}
+	var got [][]string
+	origRun, origOut := runCommand, runCommandOutput
+	t.Cleanup(func() { runCommand, runCommandOutput = origRun, origOut })
+	runCommand = func(name string, args ...string) error {
+		got = append(got, append([]string{name}, args...))
+		return nil
+	}
+	runCommandOutput = func(name string, args ...string) ([]byte, error) {
+		return []byte("'Adwaita-dark'\n"), nil
+	}
+	return &got
+}
+
 // fakeMatugenJSON renders a matugen --json hex document covering every role the
 // pipeline reads, each with a distinct dark/default/light colour so mode
 // selection is observable.
@@ -783,10 +1095,10 @@ func writePNG(t *testing.T, path string) {
 }
 
 // TestSyncFollowWallpaper pins theme.theme as the single colour master and its
-// shadow key: only the Wallpaper variant turns theme.json's followWallpaper on
-// (the live path gates on it, and nothing else could), while Default (the mono
-// base) and every named theme turn it off. Other keys in the file are somebody
-// else's and must survive.
+// shadow key: colours follow the wallpaper by default, so the plain base
+// (Default or Wallpaper) turns theme.json's followWallpaper ON, while a named
+// static theme -- or an explicit Light/Dark curated lock -- turns it off. Other
+// keys in the file are somebody else's and must survive.
 func TestSyncFollowWallpaper(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -824,12 +1136,18 @@ func TestSyncFollowWallpaper(t *testing.T) {
 		t.Errorf("named theme: followWallpaper = %v, want false", got["followWallpaper"])
 	}
 
-	// Default is the monochrome base, not a wallpaper follower: it turns the
-	// shadow key OFF so the shell renders its compiled mono palette (the shipped
-	// default and the Appearance MONO card), never the wallpaper's colours.
+	// Default is the plain base and now follows the wallpaper: with no static
+	// theme and no Light/Dark lock, the shadow key stays on.
+	syncFollowWallpaper("Default")
+	if got := read(); got["followWallpaper"] != true {
+		t.Errorf("Default: followWallpaper = %v, want true (follows by default)", got["followWallpaper"])
+	}
+
+	// An explicit Light/Dark curated lock still pins a fixed palette.
+	writeFile(t, path, `{"scheme":"dark","themeApps":true}`)
 	syncFollowWallpaper("Default")
 	if got := read(); got["followWallpaper"] != false {
-		t.Errorf("Default: followWallpaper = %v, want false", got["followWallpaper"])
+		t.Errorf("Default + dark lock: followWallpaper = %v, want false", got["followWallpaper"])
 	}
 }
 
@@ -1015,5 +1333,29 @@ func writeSolidColourPNG(t *testing.T, path string, r, g, b uint8) {
 	defer f.Close()
 	if err := png.Encode(f, solidRGBA(16, 16, r, g, b)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// paletteBorderColors maps the palette roles the shell owns onto the border:
+// color4 is the active border, background the inactive. The provider owns the
+// colour literal format, so only that role mapping is asserted here.
+func TestPaletteBorderColors(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	colorsPath := matugenColorsPath()
+	if err := os.MkdirAll(filepath.Dir(colorsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := paletteBorderColors(); ok {
+		t.Fatal("paletteBorderColors ok with no colors.json, want not ok")
+	}
+	if err := os.WriteFile(colorsPath, []byte(`{"color4":"#12ab34","background":"#010203"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	active, inactive, ok := paletteBorderColors()
+	if !ok || active != "#12ab34" || inactive != "#010203" {
+		t.Fatalf("paletteBorderColors() = (%q,%q,%v), want (#12ab34,#010203,true)", active, inactive, ok)
 	}
 }

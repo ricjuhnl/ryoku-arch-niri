@@ -2,6 +2,7 @@ pragma Singleton
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import "lib/screens.js" as Screens
 
 // screen recording state + control. drives ryoku-cmd-screenrecord
 // (gpu-screen-recorder, falling back to wf-recorder on multi-GPU machines) and
@@ -28,13 +29,11 @@ Singleton {
     property real pulse: 1
     readonly property string elapsedText: fmt(elapsedSec)
 
-    // full path: ~/.config/hypr/scripts isn't on the shell's PATH, a bare name
-    // wouldn't resolve and recording would silently never start.
-    readonly property string script: (Quickshell.env("HOME") || "") + "/.config/hypr/scripts/ryoku-cmd-screenrecord"
+    readonly property string script: "ryoku-cmd-screenrecord"
 
     // studio uses gpu-screen-recorder + a cursor track (this wrapper), then opens
-    // the clip in the ryomotion editor; a bare name wouldn't resolve on PATH.
-    readonly property string studioScript: (Quickshell.env("HOME") || "") + "/.config/hypr/scripts/ryoku-cmd-studiorecord"
+    // the clip in the ryomotion editor.
+    readonly property string studioScript: "ryoku-cmd-studiorecord"
 
     // region capture: the box the user drew as gsr's "WxH+X+Y" (logical coords),
     // "" = full monitor. slurp must launch detached (a managed Process gets its
@@ -44,6 +43,32 @@ Singleton {
     // stale file left from a past session does not.
     property string regionGeom: ""
     property bool regionPicking: false
+    // A remembered region is a box in GLOBAL logical coordinates, valid only for
+    // the monitor layout it was drawn in. After a hotplug or resolution change the
+    // logical origins shift, so that box can land off-screen or on an output that
+    // no longer exists and gsr would crop the capture to nothing. Stamp the region
+    // with the layout it was picked in (a cheap string signature, compared for
+    // equality -- never geometry arithmetic) and drop it the moment the live layout
+    // stops matching, so a stale box is never reused.
+    property string regionLayoutSig: ""
+    readonly property string layoutSig: {
+        var out = Screens.uniqueByName(Quickshell.screens);
+        var parts = [];
+        for (var i = 0; i < out.length; i++) {
+            var s = out[i];
+            parts.push(s.name + "@" + s.x + "," + s.y + ":" + s.width + "x" + s.height);
+        }
+        // sort so a reordered output announce alone never invalidates the region.
+        parts.sort();
+        return parts.join("|");
+    }
+    onLayoutSigChanged: {
+        if (root.regionGeom !== "" && root.regionLayoutSig !== root.layoutSig)
+            root.regionGeom = "";
+    }
+    // clear the stamp whenever the region clears (a manual clear, or the drop
+    // above), so it is only ever consulted alongside a live region.
+    onRegionGeomChanged: if (root.regionGeom === "") root.regionLayoutSig = "";
     readonly property string regionFilePath: (Quickshell.env("RYOKU_STATE_PATH") || (Quickshell.env("HOME") + "/.local/state/ryoku")) + "/region-pick"
     function pickRegion() {
         root.regionPicking = true;
@@ -66,7 +91,13 @@ Singleton {
                 return;
             root.regionPicking = false;
             var g = (regionFile.text() || "").trim();
-            root.regionGeom = /^\d+x\d+\+\d+\+\d+$/.test(g) ? g : "";
+            if (/^\d+x\d+\+\d+\+\d+$/.test(g)) {
+                root.regionGeom = g;
+                // stamp the layout it was drawn in, so a later change drops it.
+                root.regionLayoutSig = root.layoutSig;
+            } else {
+                root.regionGeom = "";
+            }
         }
     }
 
@@ -75,7 +106,7 @@ Singleton {
     // (native resolution and audio kept) so it drops straight into a chat.
     // Studio never compresses. pendingDiscord latches the toggle at start, so a
     // mid-capture change can't retarget the clip; discordMode persists.
-    readonly property string discordScript: (Quickshell.env("HOME") || "") + "/.config/hypr/scripts/ryoku-cmd-discord-compress"
+    readonly property string discordScript: "ryoku-cmd-discord-compress"
     property bool discordMode: false
     property bool pendingDiscord: false
     readonly property string discordFile: (Quickshell.env("RYOKU_STATE_PATH") || (Quickshell.env("HOME") + "/.local/state/ryoku")) + "/discord-record"
@@ -108,12 +139,39 @@ Singleton {
         onAdapterUpdated: writeAdapter()
         JsonAdapter {
             id: recPrefs
-            property bool desktopAudio: false
-            property bool mic: true
+            // Seeded only into a fresh record.json; an existing file keeps whatever
+            // the user last chose. A first recording should capture the application
+            // being demonstrated (desktop audio), not the user's voice -- and
+            // recording a microphone by default is a privacy surprise.
+            property bool desktopAudio: true
+            property bool mic: false
             property bool edit: false
         }
     }
     Component.onCompleted: if (!recPrefsFile.text()) recPrefsFile.writeAdapter();
+
+    // Persist the capture's start time so a shell reload mid-recording keeps
+    // counting from the real start instead of resetting the clock. Written when a
+    // capture begins and cleared when it ends; the process poll below reads it
+    // back on reload. A capture started outside the shell has no stamp and falls
+    // back to counting from when the shell first saw it.
+    readonly property string sessionFile: (Quickshell.env("RYOKU_STATE_PATH") || (Quickshell.env("HOME") + "/.local/state/ryoku")) + "/record-session"
+    function writeSession(v) {
+        Quickshell.execDetached(["sh", "-c",
+            "mkdir -p \"${1%/*}\"; printf '%s' \"$2\" > \"$1\"", "sh", root.sessionFile, v]);
+    }
+    function readSessionStart() {
+        const n = parseInt((sessionView.text() || "").trim(), 10);
+        return (isFinite(n) && n > 0) ? n : 0;
+    }
+    FileView {
+        id: sessionView
+        path: root.sessionFile
+        blockLoading: true
+        watchChanges: true
+        printErrors: false
+        onFileChanged: reload()
+    }
 
     // desktop-audio + mic flags -> ryoku-cmd-screenrecord args, shared by the card
     // and the island so the two never build the argument list differently.
@@ -126,8 +184,53 @@ Singleton {
 
     // edit-after: when a Quick recording ends, hand the clip to ryomotion. Latched
     // at start so a mid-capture toggle can't retarget it; Studio never uses it.
-    readonly property string editScript: (Quickshell.env("HOME") || "") + "/.config/hypr/scripts/ryoku-cmd-edit-recording"
+    readonly property string editScript: "ryoku-cmd-edit-recording"
     property bool pendingEdit: false
+
+    // pre-record countdown: the capture card can arm a delay (Capture.delay,
+    // 0/1/3/5/10s) so the desktop is framed before capture begins. startAfter ticks
+    // that delay down in the record island, then calls start(), so the count is
+    // honest -- it reflects a real wait, not a guess. countdownSec is the remaining
+    // whole seconds the island renders; countingDown gates that view.
+    property int countdownSec: 0
+    property bool countingDown: false
+    // args latched for the deferred start so a mid-count option change can't
+    // retarget the pending capture.
+    property var pendingArgs: []
+    function startAfter(args, secs) {
+        // secs <= 0 is exactly today's path: no countdown state, no added delay.
+        if (secs <= 0) {
+            root.start(args);
+            return;
+        }
+        root.pendingArgs = args || [];
+        root.countdownSec = secs;
+        root.countingDown = true;
+        countdown.restart();
+    }
+    // a stop or an explicit cancel during the count aborts it and leaves no timer
+    // running: nothing launched yet, so there is nothing to --stop.
+    function cancelCountdown() {
+        countdown.stop();
+        root.countingDown = false;
+        root.countdownSec = 0;
+        root.pendingArgs = [];
+    }
+    Timer {
+        id: countdown
+        interval: 1000
+        repeat: true
+        onTriggered: {
+            root.countdownSec--;
+            if (root.countdownSec <= 0) {
+                countdown.stop();
+                root.countingDown = false;
+                var a = root.pendingArgs;
+                root.pendingArgs = [];
+                root.start(a);
+            }
+        }
+    }
 
     function start(extraArgs) {
         // latch the persisted post-capture actions so a mid-capture toggle can't
@@ -139,13 +242,21 @@ Singleton {
         root.active = true;
         root.startedAt = Math.floor(Date.now() / 1000);
         root.elapsedSec = 0;
+        root.writeSession(String(root.startedAt));
         confirm.restart();
     }
 
     function stop() {
+        // a stop during the pre-record countdown just cancels it: the recorder
+        // never launched, so there is nothing to --stop, compress or edit.
+        if (root.countingDown) {
+            root.cancelCountdown();
+            return;
+        }
         Quickshell.execDetached([root.script, "--stop"]);
         root.active = false;
         root.paused = false;
+        root.writeSession("");
         // discord-quick: hand the just-finished clip to the compressor, which
         // waits for gsr/wf to finalise the mp4 before re-encoding it in place.
         if (root.pendingDiscord) {
@@ -182,6 +293,7 @@ Singleton {
         root.backend = "studio";
         root.startedAt = Math.floor(Date.now() / 1000);
         root.elapsedSec = 0;
+        root.writeSession(String(root.startedAt));
     }
     function stopStudio() {
         // SIGTERM the wrapper (not gsr): it stops the capture, writes the cursor
@@ -193,6 +305,7 @@ Singleton {
         root.backend = "";
         root.startedAt = 0;
         root.elapsedSec = 0;
+        root.writeSession("");
     }
 
     Process {
@@ -205,12 +318,14 @@ Singleton {
                 root.backend = "";
                 root.startedAt = 0;
                 root.elapsedSec = 0;
+                root.writeSession("");
             }
         }
     }
 
     SequentialAnimation on pulse {
-        running: root.anyActive && !root.paused
+        // also pulse through the pre-record countdown, as an "arming" cue.
+        running: (root.anyActive || root.countingDown) && !root.paused
         loops: Animation.Infinite
         NumberAnimation { to: 0.18; duration: 620; easing.type: Easing.InOutSine }
         NumberAnimation { to: 1.0; duration: 620; easing.type: Easing.InOutSine }
@@ -220,23 +335,41 @@ Singleton {
     // stale state when nothing's recording. pause stays optimistic while active.
     Process {
         id: poll
-        // match the full command line, not comm: Linux truncates comm to 15
-        // chars so "gpu-screen-recorder" (19) never matches `pgrep -x`. the [g]
-        // bracket keeps this poll's own command from matching itself.
-        command: ["sh", "-c", "if pgrep -f '(^|/)[g]pu-screen-recorder( |$)' >/dev/null 2>&1; then echo gsr; elif pgrep -f '(^|/)[w]f-recorder( |$)' >/dev/null 2>&1; then echo wf; else echo off; fi"]
+        // match the full command line, not comm: Linux truncates comm to 15 chars
+        // so "gpu-screen-recorder" (19) never matches `pgrep -x`. The [g] bracket
+        // keeps this poll's own command from matching itself. A replay buffer (gsr
+        // with `-r`) is not a recording -- exclude it so a background buffer never
+        // flips the record toolbar on.
+        command: ["sh", "-c",
+            "rec=off; for p in $(pgrep -f '(^|/)[g]pu-screen-recorder( |$)' 2>/dev/null); do "
+            + "cl=\" $(tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null) \"; "
+            + "case \"$cl\" in *' -r '*) : ;; *) rec=gsr ;; esac; done; "
+            + "[ \"$rec\" = off ] && pgrep -f '(^|/)[w]f-recorder( |$)' >/dev/null 2>&1 && rec=wf; "
+            + "printf '%s' \"$rec\""]
         stdout: StdioCollector {
             onStreamFinished: {
                 var b = text.trim();
                 var nowActive = b === "gsr" || b === "wf";
                 if (nowActive && !root.active) {
-                    root.startedAt = Math.floor(Date.now() / 1000);
-                    root.elapsedSec = 0;
+                    // A shell reload restarts this process with active=false while
+                    // gsr keeps running; restore the real start from the session
+                    // stamp so the clock keeps counting instead of resetting to 0.
+                    const persisted = root.readSessionStart();
+                    if (persisted > 0) {
+                        root.startedAt = persisted;
+                        root.elapsedSec = Math.max(0, Math.floor(Date.now() / 1000) - persisted);
+                    } else {
+                        root.startedAt = Math.floor(Date.now() / 1000);
+                        root.elapsedSec = 0;
+                        root.writeSession(String(root.startedAt));
+                    }
                 }
                 if (!nowActive && !root.studioActive) {
                     root.startedAt = 0;
                     root.elapsedSec = 0;
                     root.pulse = 1;
                     root.paused = false;
+                    root.writeSession("");
                 }
                 root.active = nowActive;
                 if (nowActive) root.backend = b;

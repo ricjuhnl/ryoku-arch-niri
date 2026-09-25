@@ -14,7 +14,7 @@
 # a flaky AUR build came up with no configured cursor and only a manual
 # `ryoku doctor` to notice. Building it here as a signed [ryoku] package makes it
 # resolve as a hard ryoku-desktop dependency and reach every box on install and
-# on `ryoku update`, exactly like awww.
+# on `ryoku update`, exactly like the other upstream rebuilds.
 #
 # fixed-version package: it tracks upstream Bibata releases, not the monorepo
 # RYOKU_PKGVER. To follow a new Bibata release, bump pkgver + sha256sums and
@@ -26,7 +26,7 @@
 # holding the previous db.
 pkgname=ryoku-cursors
 pkgver=2.0.7
-pkgrel=2
+pkgrel=3
 pkgdesc="Bibata XCursor set (the Ryoku desktop's configured cursor theme)"
 # The theme used to arrive as the AUR bibata-cursor-theme-bin, and this package
 # ships the same files. Without these relations pacman refused the file
@@ -39,12 +39,34 @@ replaces=('bibata-cursor-theme' 'bibata-cursor-theme-bin')
 arch=('any')
 url="https://github.com/ful1e5/Bibata_Cursor"
 license=('GPL-3.0-or-later')
+makedepends=('hyprcursor' 'xcur2png')
 source=("Bibata-$pkgver.tar.xz::$url/releases/download/v$pkgver/Bibata.tar.xz")
 sha256sums=('172e33c4ae415278384dcecc7d1a9b7a024266bc944bc751fd86532be1cc6251')
+
+build() {
+  local work="$srcdir/hyprcursor-work"
+  local extracted="$work/extracted_Bibata-Modern-Classic"
+  local out="$srcdir/hyprcursor-out"
+  rm -rf "$work" "$out"
+  mkdir -p "$work" "$out"
+  hyprcursor-util --extract "$srcdir/Bibata-Modern-Classic" -o "$work"
+  sed -i 's/^name = .*/name = Bibata-Modern-Classic/' "$extracted/manifest.hl"
+  hyprcursor-util --create "$extracted" -o "$out"
+}
+
+check() {
+  test -f "$srcdir/hyprcursor-out/theme_Bibata-Modern-Classic/manifest.hl"
+  test -d "$srcdir/hyprcursor-out/theme_Bibata-Modern-Classic/hyprcursors"
+}
 
 package() {
   # the tarball unpacks each variant as a top-level Bibata-* theme dir; install
   # the whole family so the Hub cursor picker offers every edge/colour.
   install -d "$pkgdir/usr/share/icons"
   cp -r Bibata* "$pkgdir/usr/share/icons/"
+  install -d "$pkgdir/usr/share/icons/Bibata-Modern-Classic"
+  cp -a "$srcdir/hyprcursor-out/theme_Bibata-Modern-Classic/hyprcursors" \
+        "$pkgdir/usr/share/icons/Bibata-Modern-Classic/"
+  install -Dm644 "$srcdir/hyprcursor-out/theme_Bibata-Modern-Classic/manifest.hl" \
+    "$pkgdir/usr/share/icons/Bibata-Modern-Classic/manifest.hl"
 }

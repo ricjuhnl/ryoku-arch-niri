@@ -10,6 +10,16 @@
   from the matching `ryoku doctor` reconciler (`lib/mirrors.sh`).
 
 ### Fixed
+- **Alongside installation no longer blocks on a nearly full Windows ESP.**
+  Auto mode shares an existing ESP only with at least 8 MiB free; otherwise the
+  existing 2 GiB Ryoku boot partition becomes a dedicated ESP and Windows' ESP
+  is never mounted read-write or modified. The same backend serves Arch and CachyOS.
+- **The backend README no longer claims the install is online-only.** Offline
+  installs from the baked `[offline]` repo have been the ISO default for a while
+  (`lib/offline.sh`, `SigLevel = Never` on local packages), but the README still
+  said "there is no offline package source". Rewrote the section to describe both
+  the offline and online paths and to note that a snapshot ISO should run `ryoku
+  update` after first boot.
 - **A fresh install now includes `asusctl` only when the target has a supported
   ASUS Aura laptop keyboard.** The desktop deployment runs the shared hardware
   probe inside the target, adds the signed provider package to pacman, and lets

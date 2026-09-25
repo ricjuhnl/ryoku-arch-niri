@@ -4,6 +4,7 @@ import "../components"
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
+import shell.services
 import Ryoku.Ui.Singletons
 
 PanelWindow {
@@ -61,6 +62,15 @@ PanelWindow {
     property string networkActionError: ""
     property bool   nmProfilesLoaded: false
 
+    // A hidden network has no scanned object, so it joins through the daemon
+    // intent (which writes 802-11-wireless.hidden) rather than the adapter.
+    property bool   hiddenOpen: false
+    property string hiddenSsid: ""
+    property string hiddenPassword: ""
+    property int    hiddenPendingId: -1
+    property bool   hiddenConnecting: false
+    property bool   hiddenError: false
+
     // ── wifi radio ──
     property bool   wifiBlocked: false
 
@@ -91,10 +101,10 @@ PanelWindow {
     }
 
     function edgeText() {
-        if (speedTest.phase === "idle" || speedTest.phase === "cancelled") return "Not tested"
-        if (speedTest.phase === "offline") return "Offline"
-        if (speedTest.phase === "error" || speedTest.phase === "timeout") return "Unavailable"
-        if (speedTest.phase === "latency") return "Locating…"
+        if (speedTest.phase === "idle" || speedTest.phase === "cancelled") return I18n.tr("Not tested")
+        if (speedTest.phase === "offline") return I18n.tr("Offline")
+        if (speedTest.phase === "error" || speedTest.phase === "timeout") return I18n.tr("Unavailable")
+        if (speedTest.phase === "latency") return I18n.tr("Locating…")
         var edge = speedTest.edgeCode !== "" ? "Cloudflare · " + speedTest.edgeCode : "Cloudflare Edge"
         var flag = flagForCountry(speedTest.countryCode)
         return edge + (flag !== "" ? " " + flag : "")
@@ -237,16 +247,16 @@ PanelWindow {
 
     function protectionLabel(entry) {
         if (!entry)
-            return "Unknown"
+            return I18n.tr("Unknown")
         if (entry.securityLabel)
             return entry.securityLabel
         switch (entry.sec || "") {
-        case "open": return "Open"
+        case "open": return I18n.tr("Open")
         case "psk": return "PSK"
         case "8021x": return "802.1X"
         case "wep": return "WEP"
-        case "saved": return "Saved Wi-Fi profile"
-        default: return "Unknown"
+        case "saved": return I18n.tr("Saved Wi-Fi profile")
+        default: return I18n.tr("Unknown")
         }
     }
 
@@ -336,6 +346,47 @@ PanelWindow {
         nmAdapter.item.connectWithPsk(nmPasswordNetwork, nmPasswordText)
     }
 
+    function openHidden() {
+        netPanel.hiddenOpen = true
+        netPanel.hiddenError = false
+        netPanel.hiddenSsid = ""
+        netPanel.hiddenPassword = ""
+        Qt.callLater(function() { if (hiddenSsidInput.visible) hiddenSsidInput.forceActiveFocus() })
+    }
+
+    function cancelHidden() {
+        netPanel.hiddenOpen = false
+        netPanel.hiddenConnecting = false
+        netPanel.hiddenPendingId = -1
+        netPanel.hiddenSsid = ""
+        netPanel.hiddenPassword = ""
+        netPanel.hiddenError = false
+    }
+
+    function submitHidden() {
+        if (netPanel.hiddenSsid === "" || netPanel.hiddenConnecting)
+            return
+        netPanel.hiddenError = false
+        netPanel.hiddenConnecting = true
+        netPanel.hiddenPendingId = Network.connectWifi(netPanel.hiddenSsid, netPanel.hiddenPassword, "", true)
+    }
+
+    Connections {
+        target: Network
+        function onReplied(id, ok, error) {
+            if (id !== netPanel.hiddenPendingId)
+                return
+            netPanel.hiddenConnecting = false
+            netPanel.hiddenPendingId = -1
+            if (ok) {
+                netPanel.cancelHidden()
+            } else {
+                netPanel.hiddenError = true
+                netPanel.hiddenPassword = ""
+            }
+        }
+    }
+
     function handleNmConnected(network) {
         if (!network)
             return
@@ -355,7 +406,7 @@ PanelWindow {
 
         nmConnecting = false
         nmConnectTimeout.stop()
-        nmConnectionError = "Connection failed"
+        nmConnectionError = I18n.tr("Connection failed")
         Qt.callLater(function() {
             if (nmPasswordInput.visible)
                 nmPasswordInput.forceActiveFocus()
@@ -477,8 +528,8 @@ PanelWindow {
                     anchors.top: parent.top
                     text: {
                         if (netPanel.mode === "wifi")     return netPanel.signal + "%"
-                        if (netPanel.mode === "ethernet") return "Connected"
-                        return "Offline"
+                        if (netPanel.mode === "ethernet") return I18n.tr("Connected")
+                        return I18n.tr("Offline")
                     }
                     color: netPanel.mode === "none" ? root.sumi : root.seal
                     font.family: root.mono; font.pixelSize: 11; font.weight: Font.Medium
@@ -522,7 +573,7 @@ PanelWindow {
                 Row {
                     width: parent.width
                     visible: netPanel.ipAddr !== ""
-                    UiText { text: I18n.tr("IP"); color: root.sumiHi; font.family: root.mono; font.pixelSize: 11; width: parent.width * 0.4 }
+                    UiText { text: "IP"; color: root.sumiHi; font.family: root.mono; font.pixelSize: 11; width: parent.width * 0.4 }
                     UiText { text: netPanel.ipAddr; color: root.ink; font.family: root.mono; font.pixelSize: 11 }
                 }
                 Row {
@@ -573,7 +624,7 @@ PanelWindow {
 
                         UiText {
                             anchors.centerIn: parent
-                            text: speedTest.running ? "stop" : "start"
+                            text: speedTest.running ? I18n.tr("stop") : I18n.tr("start")
                             color: speedTestMa.enabled ? root.seal : root.sumi
                             font.family: root.mono
                             font.pixelSize: 11
@@ -684,7 +735,7 @@ PanelWindow {
                         id: speedFooter
                         width: parent.width
                         visible: speedTest.phase === "success" && netPanel.lastTestStamp !== ""
-                        text: I18n.tr("done · ") + netPanel.lastTestStamp
+                        text: I18n.tr("done · %1").arg(netPanel.lastTestStamp)
                         color: root.green
                         font.family: root.mono
                         font.pixelSize: 10
@@ -748,8 +799,8 @@ PanelWindow {
 
                 Repeater {
                     model: [
-                        { label: "Available", saved: false },
-                        { label: "Saved" + (netPanel.savedCount > 0 ? " (" + netPanel.savedCount + ")" : ""), saved: true }
+                        { label: I18n.tr("Available"), saved: false },
+                        { label: I18n.tr("Saved") + (netPanel.savedCount > 0 ? " (" + netPanel.savedCount + ")" : ""), saved: true }
                     ]
                     delegate: Rectangle {
                         required property var modelData
@@ -764,7 +815,7 @@ PanelWindow {
 
                         UiText {
                             anchors.centerIn: parent
-                            text: I18n.tr(modelData.label)
+                            text: modelData.label
                             color: parent.active ? root.seal : root.ink
                             font.family: root.mono
                             font.pixelSize: 10
@@ -795,7 +846,7 @@ PanelWindow {
                 UiText {
                     anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                     visible: !netPanel.savedOnly
-                    text: netPanel.scanning ? I18n.tr("scanning…") : "rescan"
+                    text: netPanel.scanning ? I18n.tr("scanning…") : I18n.tr("rescan")
                     color: rescanMa.containsMouse ? root.fillPrimaryHover : root.seal
                     font.family: root.mono; font.pixelSize: 10
                     Behavior on color { ColorAnimation { duration: 120 } }
@@ -890,7 +941,7 @@ PanelWindow {
                                     spacing: 8
                                     UiText {
                                         visible: modelData.known && !modelData.conn
-                                        text: netPanel.isNeverConnected(modelData) ? "profile" : "saved"
+                                        text: netPanel.isNeverConnected(modelData) ? I18n.tr("profile") : I18n.tr("saved")
                                         color: root.sumiHi
                                         font.family: root.mono
                                         font.pixelSize: 9
@@ -965,12 +1016,12 @@ PanelWindow {
                                             var details = [
                                                 netPanel.protectionLabel(modelData),
                                                 modelData.visible === false
-                                                    ? "Not currently visible"
-                                                    : "Signal " + (modelData.sig * 25) + "%"
+                                                    ? I18n.tr("Not currently visible")
+                                                    : I18n.tr("Signal %1%").arg(modelData.sig * 25)
                                             ]
                                             if (modelData.known)
                                                 details.push(netPanel.isNeverConnected(modelData)
-                                                    ? "Never connected" : "Saved")
+                                                    ? I18n.tr("Never connected") : I18n.tr("Saved"))
                                             return details.join(" · ")
                                         }
                                         color: root.sumiHi
@@ -1058,6 +1109,114 @@ PanelWindow {
                 }
             }
 
+            UiText {
+                width: parent.width; height: 22
+                visible: netPanel.hasWifi && !netPanel.wifiBlocked && (!root.useNM || netPanel.nmAdapterReady) && !netPanel.hiddenOpen
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                text: I18n.tr("Connect to a hidden network")
+                color: hiddenLinkMa.containsMouse ? root.fillPrimaryHover : root.seal
+                font.family: root.mono; font.pixelSize: 10
+                Behavior on color { ColorAnimation { duration: 120 } }
+                MouseArea { id: hiddenLinkMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: netPanel.openHidden() }
+            }
+
+            Rectangle {
+                width: parent.width
+                height: netPanel.hiddenOpen ? hiddenColumn.implicitHeight + 16 : 0
+                visible: netPanel.hiddenOpen
+                radius: root.panelButtonRadius
+                color: root.fillIdle
+                border.color: netPanel.hiddenError ? root.sealRaw : root.seal
+                border.width: 1
+                clip: true
+
+                Column {
+                    id: hiddenColumn
+                    anchors { left: parent.left; right: parent.right; top: parent.top; margins: 8 }
+                    spacing: 6
+
+                    UiText {
+                        width: parent.width
+                        text: netPanel.hiddenError ? I18n.tr("Could not connect") : I18n.tr("Hidden network")
+                        color: netPanel.hiddenError ? root.sealRaw : root.ink
+                        font.family: root.mono; font.pixelSize: 10
+                    }
+                    Rectangle {
+                        width: parent.width; height: 24; radius: root.panelButtonRadius
+                        color: root.bg
+                        border.color: hiddenSsidInput.activeFocus ? root.seal : root.sep; border.width: 1
+                        TextInput {
+                            id: hiddenSsidInput
+                            anchors { fill: parent; leftMargin: 8; rightMargin: 8 }
+                            verticalAlignment: TextInput.AlignVCenter
+                            text: netPanel.hiddenSsid
+                            onTextChanged: { netPanel.hiddenSsid = text; netPanel.hiddenError = false }
+                            color: root.ink; selectionColor: root.seal; selectedTextColor: root.paper
+                            font.family: root.mono; font.pixelSize: 11; clip: true
+                            Keys.onPressed: function(event) { if (event.key === Qt.Key_Escape) { netPanel.cancelHidden(); event.accepted = true } }
+                        }
+                        UiText {
+                            anchors { left: parent.left; leftMargin: 8; verticalCenter: parent.verticalCenter }
+                            visible: hiddenSsidInput.text === "" && !hiddenSsidInput.activeFocus
+                            text: I18n.tr("Network name (SSID)")
+                            color: Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.4)
+                            font.family: root.mono; font.pixelSize: 11
+                        }
+                    }
+                    Rectangle {
+                        width: parent.width; height: 24; radius: root.panelButtonRadius
+                        color: root.bg
+                        border.color: hiddenPwInput.activeFocus ? root.seal : root.sep; border.width: 1
+                        TextInput {
+                            id: hiddenPwInput
+                            anchors { fill: parent; leftMargin: 8; rightMargin: 8 }
+                            verticalAlignment: TextInput.AlignVCenter
+                            text: netPanel.hiddenPassword
+                            onTextChanged: { netPanel.hiddenPassword = text; netPanel.hiddenError = false }
+                            echoMode: TextInput.Password
+                            color: root.ink; selectionColor: root.seal; selectedTextColor: root.paper
+                            font.family: root.mono; font.pixelSize: 11; clip: true
+                            Keys.onPressed: function(event) {
+                                if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) { netPanel.submitHidden(); event.accepted = true }
+                                else if (event.key === Qt.Key_Escape) { netPanel.cancelHidden(); event.accepted = true }
+                            }
+                        }
+                        UiText {
+                            anchors { left: parent.left; leftMargin: 8; verticalCenter: parent.verticalCenter }
+                            visible: hiddenPwInput.text === "" && !hiddenPwInput.activeFocus
+                            text: I18n.tr("Password (leave empty if open)")
+                            color: Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.4)
+                            font.family: root.mono; font.pixelSize: 11
+                        }
+                    }
+                    Row {
+                        width: parent.width; height: 22; spacing: 6
+                        Rectangle {
+                            width: (parent.width - 6) / 2; height: parent.height; radius: root.panelButtonRadius
+                            color: hiddenConnectMa.enabled ? (hiddenConnectMa.containsMouse ? root.fillPrimaryHover : root.seal) : root.fillIdle
+                            border.color: hiddenConnectMa.enabled ? root.seal : root.sep; border.width: 1
+                            Behavior on color { ColorAnimation { duration: 120 } }
+                            UiText {
+                                anchors.centerIn: parent
+                                text: netPanel.hiddenConnecting ? I18n.tr("connecting…") : I18n.tr("connect")
+                                color: hiddenConnectMa.enabled ? root.paper : root.sumi
+                                font.family: root.mono; font.pixelSize: 10
+                            }
+                            MouseArea { id: hiddenConnectMa; anchors.fill: parent; enabled: netPanel.hiddenSsid !== "" && !netPanel.hiddenConnecting; hoverEnabled: true; cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor; onClicked: netPanel.submitHidden() }
+                        }
+                        Rectangle {
+                            width: (parent.width - 6) / 2; height: parent.height; radius: root.panelButtonRadius
+                            color: hiddenCancelMa.containsMouse ? root.fillHover : root.fillIdle
+                            border.color: hiddenCancelMa.containsMouse ? root.seal : root.sep; border.width: 1
+                            Behavior on color { ColorAnimation { duration: 120 } }
+                            UiText { anchors.centerIn: parent; text: I18n.tr("cancel"); color: hiddenCancelMa.containsMouse ? root.seal : root.sumi; font.family: root.mono; font.pixelSize: 10 }
+                            MouseArea { id: hiddenCancelMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: netPanel.cancelHidden() }
+                        }
+                    }
+                }
+            }
+
             Rectangle {
                 width: parent.width
                 height: visible ? 92 : 0
@@ -1077,7 +1236,7 @@ PanelWindow {
                         width: parent.width
                         text: netPanel.nmConnectionError !== ""
                             ? netPanel.nmConnectionError
-                            : I18n.tr("Password for ") + netPanel.nmPasswordSsid
+                            : I18n.tr("Password for %1").arg(netPanel.nmPasswordSsid)
                         color: netPanel.nmConnectionError !== "" ? root.sealRaw : root.ink
                         font.family: root.mono
                         font.pixelSize: 10
@@ -1137,7 +1296,7 @@ PanelWindow {
                             Behavior on color { ColorAnimation { duration: 120 } }
                             UiText {
                                 anchors.centerIn: parent
-                                text: netPanel.nmConnecting ? I18n.tr("connecting…") : "connect"
+                                text: netPanel.nmConnecting ? I18n.tr("connecting…") : I18n.tr("connect")
                                 color: passwordSubmitMa.enabled ? root.paper : root.sumi
                                 font.family: root.mono
                                 font.pixelSize: 10
@@ -1162,7 +1321,7 @@ PanelWindow {
                             Behavior on color { ColorAnimation { duration: 120 } }
                             UiText {
                                 anchors.centerIn: parent
-                                text: "cancel"
+                                text: I18n.tr("cancel")
                                 color: passwordCancelMa.containsMouse ? root.seal : root.sumi
                                 font.family: root.mono
                                 font.pixelSize: 10
@@ -1369,7 +1528,7 @@ PanelWindow {
                 return
 
             netPanel.nmConnecting = false
-            netPanel.nmConnectionError = "Connection timed out"
+            netPanel.nmConnectionError = I18n.tr("Connection timed out")
             Qt.callLater(function() {
                 if (nmPasswordInput.visible)
                     nmPasswordInput.forceActiveFocus()

@@ -9,6 +9,10 @@ Rectangle {
     property string title: ""
     property var options: []
     property string current: ""
+    // optional key -> display label; a key absent from the map keeps its own
+    // text. Lets a caller show a friendly option name (the anchor picker's
+    // "Auto (calm spot)") while still storing the raw key.
+    property var labels: ({})
     signal chose(string key)
     signal dismissed()
 
@@ -20,8 +24,18 @@ Rectangle {
     border.color: Tokens.lineStrong
 
     function open() { q.text = ""; q.forceActiveFocus() }
+    // the display label is what the reader sees, so it is what the filter has
+    // to match: in the language list the key is "pl" and the label "Polski",
+    // and typing either has to find it.
+    function _display(o) {
+        return (pick.labels && pick.labels[o] !== undefined) ? pick.labels[o] : I18n.tr(o);
+    }
     readonly property var shown: options.filter(function (o) {
-        return q.text === "" || o.toLowerCase().indexOf(q.text.toLowerCase()) >= 0;
+        if (q.text === "")
+            return true;
+        var needle = q.text.toLowerCase();
+        return o.toLowerCase().indexOf(needle) >= 0
+            || String(pick._display(o)).toLowerCase().indexOf(needle) >= 0;
     })
 
     Column {
@@ -69,7 +83,7 @@ Rectangle {
                 Text {
                     anchors.fill: parent
                     visible: q.text === ""
-                    text: "Filter…"
+                    text: I18n.tr("Filter…")
                     color: Tokens.inkMuted
                     font: q.font
                     verticalAlignment: Text.AlignVCenter
@@ -95,7 +109,7 @@ Rectangle {
                         Behavior on color { ColorAnimation { duration: 70 } }
                         Text {
                             anchors { left: parent.left; leftMargin: 8; verticalCenter: parent.verticalCenter }
-                            text: I18n.tr(parent.modelData)
+                            text: pick._display(parent.modelData)
                             color: rh.hovered ? Tokens.inkOnBone : (pick.current === parent.modelData ? Tokens.ink : Tokens.inkDim)
                             font.family: Tokens.ui
                             font.pixelSize: 13

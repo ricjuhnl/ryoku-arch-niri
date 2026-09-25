@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import "Singletons"
+import Ryoku.Ui.Singletons
 
 /**
  * A live, plain-QML preview of the desktop clock widget for the Desktop Widgets
@@ -36,7 +37,7 @@ Item {
     readonly property string hh: preview.is24 ? pad2(h) : String(h12)
     readonly property string mm: pad2(mins)
     readonly property string ss: pad2(secs)
-    readonly property string ampm: h < 12 ? "AM" : "PM"
+    readonly property string ampm: h < 12 ? I18n.tr("AM") : I18n.tr("PM")
 
     readonly property var weekdays: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
     readonly property var weekdaysShort: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
@@ -45,7 +46,13 @@ Item {
     readonly property int dom: now.getDate()
     readonly property int monIdx: now.getMonth()
 
+    // report the content's real size: the host card scales against this, and a
+    // face plus a date line is taller than the registry's bare-face guess.
+    implicitWidth: contentCol.implicitWidth
+    implicitHeight: contentCol.implicitHeight
+
     Column {
+        id: contentCol
         anchors.centerIn: parent
         spacing: 14
 
@@ -70,6 +77,10 @@ Item {
         case "bighour": return bighourC;
         case "metal":   return metalC;
         case "goodnight": return goodnightC;
+        case "grand":   return grandC;
+        case "column":  return columnC;
+        case "outline": return outlineC;
+        case "banner":  return bannerC;
         default:        return digitalC;
         }
     }
@@ -234,6 +245,80 @@ Item {
         }
         Component.onCompleted: requestPaint()
     }
+    Component {
+        id: grandC
+        Row {
+            spacing: preview.seconds || !preview.is24 ? 8 : 0
+            Row {
+                id: gHm
+                spacing: 0
+                Text { text: preview.hh; color: preview.ink; font.family: "Fraunces"; font.weight: Font.Medium; font.pixelSize: 72 }
+                Text { text: ":"; color: preview.accent; font.family: "Fraunces"; font.weight: Font.Medium; font.pixelSize: 72 }
+                Text { text: preview.mm; color: preview.ink; font.family: "Fraunces"; font.weight: Font.Medium; font.pixelSize: 72 }
+            }
+            Item {
+                height: gHm.height
+                width: Math.max(gSec.implicitWidth, gAmpm.implicitWidth)
+                visible: preview.seconds || !preview.is24
+                Column {
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 3
+                    Text { id: gSec; visible: preview.seconds; text: preview.ss; color: preview.accent; font.family: "Fraunces"; font.pixelSize: 20 }
+                    Text { id: gAmpm; visible: !preview.is24; text: preview.ampm; color: preview.inkDim; font.family: "Space Grotesk"; font.pixelSize: 12; font.weight: Font.DemiBold; font.letterSpacing: 2 }
+                }
+            }
+        }
+    }
+    Component {
+        id: columnC
+        Column {
+            spacing: -14
+            Text { text: preview.hh; color: preview.ink; font.family: "Space Grotesk"; font.weight: Font.Bold; font.pixelSize: 66; font.letterSpacing: -1 }
+            Text { text: preview.mm; color: preview.accent; font.family: "Space Grotesk"; font.weight: Font.Bold; font.pixelSize: 66; font.letterSpacing: -1 }
+            Row {
+                spacing: 6
+                topPadding: 6
+                visible: preview.seconds || !preview.is24
+                Text { visible: preview.seconds; text: preview.ss; color: preview.inkDim; font.family: "Space Grotesk"; font.weight: Font.DemiBold; font.pixelSize: 15 }
+                Text { visible: !preview.is24; text: preview.ampm; color: preview.inkDim; font.family: "Space Grotesk"; font.weight: Font.DemiBold; font.pixelSize: 15; font.letterSpacing: 2 }
+            }
+        }
+    }
+    Component {
+        id: outlineC
+        Row {
+            spacing: 4
+            Hollow { anchors.verticalCenter: parent.verticalCenter; txt: preview.hh; ps: 76; lw: 2.4 }
+            Text { anchors.verticalCenter: parent.verticalCenter; text: ":"; color: preview.accent; font.family: "Space Grotesk"; font.weight: Font.Bold; font.pixelSize: 76 }
+            Hollow { anchors.verticalCenter: parent.verticalCenter; txt: preview.mm; ps: 76; lw: 2.4 }
+        }
+    }
+
+    // banner: NibrasShell's wide readout -- hh:mm AP - MM/DD; the colon carries the accent.
+    Component {
+        id: bannerC
+        Row {
+            spacing: 9
+            Row {
+                id: bHm
+                spacing: 0
+                anchors.verticalCenter: parent.verticalCenter
+                Text { text: preview.hh; color: preview.ink; font.family: "Inter"; font.weight: Font.Bold; font.pixelSize: 64; font.letterSpacing: -1 }
+                Text { text: ":"; color: preview.accent; font.family: "Inter"; font.weight: Font.Bold; font.pixelSize: 64; font.letterSpacing: -1 }
+                Text { text: preview.mm; color: preview.ink; font.family: "Inter"; font.weight: Font.Bold; font.pixelSize: 64; font.letterSpacing: -1 }
+            }
+            Text {
+                visible: !preview.is24
+                anchors.bottom: bHm.bottom
+                anchors.bottomMargin: 10
+                text: preview.ampm; color: preview.inkDim
+                font.family: "Inter"; font.weight: Font.DemiBold
+                font.pixelSize: 13; font.letterSpacing: 2
+            }
+            Text { anchors.verticalCenter: parent.verticalCenter; text: "\u2013"; color: preview.inkDim; font.family: "Inter"; font.weight: Font.Bold; font.pixelSize: 64 }
+            Text { anchors.verticalCenter: parent.verticalCenter; text: preview.pad2(preview.monIdx + 1) + "/" + preview.pad2(preview.dom); color: preview.ink; font.family: "Inter"; font.weight: Font.Bold; font.pixelSize: 64; font.letterSpacing: -1 }
+        }
+    }
 
     // big-hour: weekday/day + hollow month | giant hour | minute + hollow second
     Component {
@@ -282,7 +367,7 @@ Item {
             }
             Text {
                 text: (preview.is24 ? "" : preview.ampm + "  |  ")
-                    + preview.weekdays[preview.dow] + "  |  Clear  \u00b7  23\u00b0"
+                    + preview.weekdays[preview.dow] + I18n.tr("  |  Clear  \u00b7  23\u00b0")
                 color: preview.ink; font.family: "Inter Display"; font.weight: Font.Bold
                 font.pixelSize: 25; font.letterSpacing: 0.5
             }
@@ -302,15 +387,15 @@ Item {
                 spacing: 12
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: "GOOD"; color: preview.ink
+                    text: I18n.tr("GOOD"); color: preview.ink
                     font.family: "Inter Display"; font.weight: Font.Medium
                     font.pixelSize: 26; font.letterSpacing: 10
                 }
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: preview.h >= 5 && preview.h < 12 ? "MORNING"
-                        : preview.h >= 12 && preview.h < 17 ? "AFTERNOON"
-                        : preview.h >= 17 && preview.h < 21 ? "EVENING" : "NIGHT"
+                    text: preview.h >= 5 && preview.h < 12 ? I18n.tr("MORNING")
+                        : preview.h >= 12 && preview.h < 17 ? I18n.tr("AFTERNOON")
+                        : preview.h >= 17 && preview.h < 21 ? I18n.tr("EVENING") : I18n.tr("NIGHT")
                     color: preview.ink; font.family: "Inter Display"; font.weight: Font.Medium
                     font.pixelSize: 26; font.letterSpacing: 10
                 }

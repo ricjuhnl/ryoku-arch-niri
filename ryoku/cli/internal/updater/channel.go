@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"ryoku-cli/internal/sys"
+	i18n "ryoku-i18n"
 	"strconv"
 	"strings"
 	"time"
@@ -19,16 +20,23 @@ import (
 // A packaged install has no checkout, so these report "no channel" and the
 // caller falls back to the pacman view of the [ryoku] repo.
 
-// ryokuChannel: the branch update tracks. The live RYOKU_CHANNEL env wins; then
-// the channel `ryoku track` persisted to environment.d, which the session loads
-// only at the next login -- reading it here keeps `ryoku status`/`update` on the
-// tracked branch on a just-switched box instead of measuring against the default
-// and showing updates that never clear. Every other box follows main.
+// ryokuChannel: the channel update tracks. A packaged box's channel is
+// authoritative -- the [ryoku] Server it points at (stable, testing, or a
+// pinned release) -- and wins over a RYOKU_CHANNEL a source box left in
+// environment.d before it was migrated onto packages, so a migrated box
+// reports testing, not the stale unstable-dev. A source checkout follows the
+// branch `ryoku track --source` persisted to environment.d, which wins over the
+// stale login env; a box that never tracked follows main.
 func ryokuChannel() string {
-	if c := strings.TrimSpace(os.Getenv("RYOKU_CHANNEL")); c != "" {
-		return c
+	if sys.ResolveRepo() == "" {
+		if c := sys.PackagedChannel(); c != "" {
+			return c
+		}
 	}
 	if c := sys.TrackedChannel(); c != "" {
+		return c
+	}
+	if c := strings.TrimSpace(os.Getenv("RYOKU_CHANNEL")); c != "" {
 		return c
 	}
 	return "main"
@@ -85,14 +93,16 @@ func channelStatus() (statusReport, bool) {
 	if behind > 0 {
 		installed = gitShort(repo, base)
 	}
+	snaps, snapsKnown := snapshotCount()
 	return statusReport{
-		Installed: installed,
-		Latest:    latest,
-		Available: behind > 0,
-		Behind:    behind,
-		Updates:   gitLog(repo, base+".."+remote),
-		Channel:   ch,
-		Snapshots: snapshotCount(),
+		Installed:      installed,
+		Latest:         latest,
+		Available:      behind > 0,
+		Behind:         behind,
+		Updates:        gitLog(repo, base+".."+remote),
+		Channel:        ch,
+		Snapshots:      snaps,
+		SnapshotsKnown: snapsKnown,
 	}, true
 }
 
@@ -102,12 +112,12 @@ func channelStatus() (statusReport, bool) {
 func channelUpdate() error {
 	repo := sys.ResolveRepo()
 	if repo == "" {
-		return fmt.Errorf("no Ryoku checkout to update")
+		return fmt.Errorf(i18n.T("no Ryoku checkout to update"))
 	}
 	ch := ryokuChannel()
 
 	progress.at("channel")
-	progress.logf("Updating Ryoku (channel: %s)", ch)
+	progress.logf(i18n.T("Updating Ryoku (channel: %s)"), ch)
 	gitFetch(repo, ch)
 	// report what the sync actually did; "Update complete" alone hid a box that
 	// redeployed the same commit every time.
@@ -116,17 +126,38 @@ func channelUpdate() error {
 		return err
 	}
 	if after := gitShort(repo, "HEAD"); after != before {
-		progress.logf("Advanced %s -> %s", before, after)
+		progress.logf(i18n.T("Advanced %s -> %s (v%s %s)"), before, after, readVersion(repo), ch)
 	} else {
-		progress.logf("Already on the latest %s commit (%s)", ch, before)
+		progress.logf(i18n.T("Already on the latest %s (v%s, %s)"), ch, readVersion(repo), before)
 	}
 
 	progress.at("deploy")
-	progress.logf("Deploying the desktop from the checkout")
-	if err := sys.Run(filepath.Join(repo, "ryoku", "shell", "deploy.sh")); err != nil {
-		return fmt.Errorf("deploy from %s failed: %w", repo, err)
+	progress.logf(i18n.T("Deploying the desktop from the checkout"))
+	if err := deployRun(filepath.Join(repo, "ryoku", "shell", "deploy.sh")); err != nil {
+		return fmt.Errorf(i18n.T("deploy from %s failed: %w"), repo, err)
 	}
 	return nil
+}
+
+// deployRun renders deploy.sh as a quiet spinner on a real terminal (its
+// build/install chatter is not something a user needs to read), and streams it
+// raw for pipes, logs, and --verbose.
+func deployRun(path string) error {
+	if verboseLog || !sys.StdoutIsTTY() {
+		return sys.Run(path)
+	}
+	return renderQuiet([]string{path})
+}
+
+// readVersion reads the checkout's VERSION file (e.g. 0.50.8-beta.19), the
+// release bump every push carries, so the update names the version, not just the
+// commit. "?" when absent.
+func readVersion(repo string) string {
+	b, err := os.ReadFile(filepath.Join(repo, "VERSION"))
+	if err != nil {
+		return "?"
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // syncChannel advances a clean checkout onto origin/<ch> when that is a lossless
@@ -143,7 +174,7 @@ func syncChannel(repo, ch string) error {
 	// No channel ref to track (offline first run, or the branch is gone): deploy
 	// what is checked out rather than guess.
 	if _, err := sys.RunOut("git", "-C", repo, "rev-parse", "--verify", "--quiet", remote); err != nil {
-		progress.logf("No origin/%s to track (offline, or the branch is gone); deploying the checkout as-is", ch)
+		progress.logf(i18n.T("No origin/%s to track (offline, or the branch is gone); deploying the checkout as-is"), ch)
 		return nil
 	}
 	// untracked files don't block a fast-forward (git refuses one that would
@@ -151,7 +182,7 @@ func syncChannel(repo, ch string) error {
 	// dirty froze boxes: one stray build artifact and update redeployed the same
 	// commit forever.
 	if dirty, _ := sys.RunOut("git", "-C", repo, "status", "--porcelain", "--untracked-files=no"); strings.TrimSpace(dirty) != "" {
-		progress.logf("Uncommitted changes in %s; staying on %s (commit or stash them, then update again)",
+		progress.logf(i18n.T("Uncommitted changes in %s; staying on %s (commit or stash them, then update again)"),
 			repo, gitShort(repo, "HEAD"))
 		return nil
 	}
@@ -163,8 +194,8 @@ func syncChannel(repo, ch string) error {
 	if isAncestor(repo, "HEAD", remote) {
 		if err := sys.Run("git", "-C", repo, "merge", "--ff-only", remote); err != nil {
 			// usually an untracked file the incoming commits also add; git names it above.
-			return fmt.Errorf("fast-forward to origin/%s failed (see git's message above; "+
-				"move the colliding file out of %s, then update again): %w", ch, repo, err)
+			return fmt.Errorf(i18n.T("fast-forward to origin/%s failed (see git's message above; "+
+				"move the colliding file out of %s, then update again): %w"), ch, repo, err)
 		}
 		return nil
 	}
@@ -172,9 +203,9 @@ func syncChannel(repo, ch string) error {
 	// upstream, so reset it; any other branch keeps its work (a maintainer mid-dev).
 	head, _ := sys.RunOut("git", "-C", repo, "symbolic-ref", "--short", "--quiet", "HEAD")
 	if strings.TrimSpace(head) == ch {
-		progress.logf("Channel history diverged; reconciling %s onto origin/%s", ch, ch)
+		progress.logf(i18n.T("Channel history diverged; reconciling %s onto origin/%s"), ch, ch)
 		if err := sys.Run("git", "-C", repo, "reset", "--hard", remote); err != nil {
-			return fmt.Errorf("reconcile to origin/%s failed: %w", ch, err)
+			return fmt.Errorf(i18n.T("reconcile to origin/%s failed: %w"), ch, err)
 		}
 	}
 	return nil

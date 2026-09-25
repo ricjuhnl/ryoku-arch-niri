@@ -5,6 +5,7 @@ import QtQuick.Controls
 import shell.services
 import "../../components"
 import Ryoku.Ui.Singletons
+import Ryoku.Ui
 
 // polkit authentication island, grown from the pill centre. Renders the PAM
 // conversation the ryoku-shell daemon runs as the PolicyKit1 agent, in place of
@@ -28,11 +29,11 @@ PillSurface {
     readonly property string fieldLabel: {
         const p = Polkit.prompt.trim();
         if (p === "")
-            return "Password";
+            return I18n.tr("Password");
         return p.replace(/:\s*$/, "");
     }
     readonly property string bodyText: Polkit.message !== "" ? Polkit.message
-        : "An application is asking for administrator access."
+        : I18n.tr("An application is asking for administrator access.")
 
     implicitHeight: col.implicitHeight
 
@@ -108,6 +109,22 @@ PillSurface {
             font.pixelSize: 11.5 * root.s
             wrapMode: Text.WordWrap
             lineHeight: 1.15
+        }
+
+        // The reader appears the moment pam_fprintd starts narrating a scan
+        // (Polkit.fingerprint), so an admin prompt answers to a touch OR the
+        // typed password, like macOS. Same component as the lock and the Hub.
+        Item {
+            width: parent.width
+            height: visible ? 78 * root.s : 0
+            visible: Polkit.fingerprint !== ""
+            FingerprintScan {
+                anchors.centerIn: parent
+                sizePx: 68 * root.s
+                accent: Theme.primary
+                ink: Theme.onSurface
+                phase: Polkit.fingerprint === "fail" ? "fail" : "scanning"
+            }
         }
 
         Text {

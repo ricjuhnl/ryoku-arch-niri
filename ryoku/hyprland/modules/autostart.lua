@@ -1,11 +1,16 @@
+-- The Hyprland provider's login bootstrap; a second compositor ships its own.
 hl.on("hyprland.start", function()
     -- Start the GNOME keyring's secrets + pkcs11 agents before anything that
     -- might ask for a stored secret. Idempotent: if PAM already started it at
     -- login (unlock-on-login mode), this just re-prints its env and exits.
     hl.exec_cmd("gnome-keyring-daemon --start --components=secrets,pkcs11")
-    hl.exec_cmd("hyprctl setcursor Bibata-Modern-Ice 24")
+    hl.exec_cmd("ryoku-wm-hyprland act cursor.set Bibata-Modern-Ice 24")
     hl.exec_cmd("gsettings set org.gnome.desktop.interface color-scheme prefer-dark")
-    hl.exec_cmd("gsettings set org.gnome.desktop.interface gtk-theme Adwaita-dark")
+    -- adw-gtk3-dark, not Adwaita-dark: stock Adwaita GTK3 hardcodes its colours,
+    -- so the palette Ryoku generates barely reaches GTK3 apps, while adw-gtk3
+    -- derives its rules from the named colours we already emit. The daemon owns
+    -- accent-color; do not set it here.
+    hl.exec_cmd("gsettings set org.gnome.desktop.interface gtk-theme adw-gtk3-dark")
     -- Folder icons follow the wallpaper accent: ryoku-cmd-folders builds a small
     -- Papirus-Dark overlay under ~/.local/share/icons tinted to the palette and
     -- selects it. Rebuilt on every palette change by the shell's matugen hook.
@@ -17,11 +22,18 @@ hl.on("hyprland.start", function()
     -- sees every hl.env() name, a systemd or D-Bus launched one sees only what
     -- is pushed here, and a hand-kept list drifts the moment env.lua, the Hub,
     -- or user.lua adds one.
+    -- restart, not start: the user manager outlives a session (linger, a
+    -- relogin after a compositor crash), and a daemon it still holds from the
+    -- previous one answers `start` with "already active" while its surfaces are
+    -- bound to the dead compositor, so the login lands on bare Hyprland with no
+    -- shell. daemon-reload first, so a unit materialize just re-laid is the one
+    -- that runs, and reset-failed so a unit that hit its start limit last
+    -- session can start at all.
     -- Portals restart last, once the desktop is up: they are only
     -- PartOf=graphical-session.target and nothing stops that target, so a
     -- previous session's frontend survives and every ScreenCast request it
     -- proxies times out instead of reaching the backend.
-    hl.exec_cmd("dbus-update-activation-environment --systemd --all; systemctl --user start hyprland-session.target; systemctl --user start ryoku-shell; systemctl --user try-restart xdg-desktop-portal.service xdg-desktop-portal-hyprland.service xdg-desktop-portal-gtk.service")
+    hl.exec_cmd("dbus-update-activation-environment --systemd --all; systemctl --user daemon-reload; systemctl --user reset-failed ryogami ryoku-shell 2>/dev/null; systemctl --user start ryoku-session.target; systemctl --user restart ryoku-shell; systemctl --user restart ryogami; systemctl --user try-restart xdg-desktop-portal.service xdg-desktop-portal-hyprland.service xdg-desktop-portal-gtk.service")
     -- Polkit authentication is answered by the shell's own agent (the island
     -- that matches the rest of the desktop), so the stock Qt agent must not
     -- take the session's single agent slot. Stopping it is idempotent and
@@ -52,6 +64,9 @@ hl.on("hyprland.start", function()
     -- no OpenRGB at all, until lighting is on with a device adopted.
     hl.exec_cmd("command -v ryoku-hub >/dev/null 2>&1 && ryoku-hub lighting apply")
     hl.exec_cmd("command -v ryoku-mic >/dev/null 2>&1 && ryoku-mic")
+    -- Night light: hyprsunset is a plain process a reboot drops, so restore the
+    -- warm screen when the user left it on. A no-op when it was off or absent.
+    hl.exec_cmd("command -v ryoku-cmd-nightlight >/dev/null 2>&1 && ryoku-cmd-nightlight restore")
     -- Booted into a btrfs snapshot from the Limine menu: offer the one-click
     -- restore. limine-snapper-sync ships this as an XDG autostart entry, which
     -- Hyprland never runs (no autostart manager), so start it here; on a normal
@@ -87,5 +102,20 @@ hl.on("hyprland.start", function()
     end
     if seen_version < welcome_version then
         hl.exec_cmd("flock -n \"${XDG_RUNTIME_DIR:-/tmp}/ryoku-welcome.lock\" qs -c welcome && mkdir -p '" .. welcome_state .. "' && printf '" .. welcome_version .. "' > '" .. welcome_state .. "/welcome-seen'")
+    end
+
+    -- First-boot keyboard hint. A one-shot toast pointing new users at Super+K,
+    -- shown exactly once ever: the marker is written the first time this runs and
+    -- checked forever after, so it never returns on a relogin, reboot or update
+    -- (unlike the versioned welcome flag above). The marker is written before the
+    -- async launch, so a reboot before the user dismisses the toast cannot bring
+    -- it back. It rides the overlay layer above the welcome tour and stays until
+    -- its X is clicked.
+    local keys_hint_seen = welcome_state .. "/keys-hint-seen"
+    local kh = io.open(keys_hint_seen, "r")
+    if kh then
+        kh:close()
+    else
+        hl.exec_cmd("mkdir -p '" .. welcome_state .. "' && printf 'seen' > '" .. keys_hint_seen .. "' && flock -n \"${XDG_RUNTIME_DIR:-/tmp}/ryoku-keys-hint.lock\" qs -c keys-hint")
     end
 end)

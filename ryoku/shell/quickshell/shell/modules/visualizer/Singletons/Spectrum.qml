@@ -21,6 +21,9 @@ Singleton {
     property bool active: false
     property int bars: 64
     property int fps: 30
+    // Instances being placed (Super+Alt+M) hold this up so the spectrum keeps
+    // running while it is aimed: you cannot position a frozen, invisible line.
+    property int placementHolds: 0
 
     // 0..1 per band (length == bars) + mean energy across all bands.
     property var levels: root.flat(0.02)
@@ -36,17 +39,16 @@ Singleton {
 
     // Visible, permitted, and something actually playing: the same three
     // questions AudioBars asks, so the two analysers cannot drift apart again.
-    readonly property bool analysing: root.active && !Perf.visualizerFrozen
+    // A live placement overrides the freeze so the look stays visible to aim.
+    readonly property bool analysing: root.active && (!Perf.visualizerFrozen || root.placementHolds > 0)
 
     Process {
         id: cavaProc
         // playback spectrum via cava's native pipewire backend, source=auto (the default sink's monitor). the pulse backend can't connect here ("Connection terminated") even with pipewire-pulse up, and this path needs no pactl. exec so quickshell's SIGTERM reaches cava, leaving no orphaned analyser when the surface unloads.
         command: ["sh", "-c", "command -v cava >/dev/null 2>&1 || exit 0; cfg=\"${XDG_RUNTIME_DIR:-/tmp}/ryoku-cava-visualizer.conf\"; printf '%s\\n' '[general]' 'framerate = " + root.fps + "' 'bars = " + root.bars + "' '' '[input]' 'method = pipewire' 'source = auto' '' '[output]' 'method = raw' 'raw_target = /dev/stdout' 'data_format = ascii' 'ascii_max_range = 100' 'channels = mono' 'mono_option = average' '' '[smoothing]' 'noise_reduction = 45' > \"$cfg\"; exec cava -p \"$cfg\""]
-        running: root.analysing
-        // Bound, never assigned. Four imperative `cavaProc.running = true` writes
-        // used to live below, and any one of them destroys this binding: from then
-        // on the analyser ignored every gate meant to stop it. The backoff window
-        // expresses a restart without taking the binding away.
+        // `backoff`'s false->true edge relaunches a cava that self-exits (a pipewire
+        // hiccup) mid-track; the shipped `running: analysing` alone never did (#61).
+        running: root.analysing && !cavaProc.backoff
         property bool backoff: false
         stdout: SplitParser {
             splitMarker: "\n"

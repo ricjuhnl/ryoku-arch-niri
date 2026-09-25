@@ -3,6 +3,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import Ryoku.FrameBars
+import Ryoku.Ui.Singletons
 
 // live shell appearance config. one source of truth for the look knobs Ryoku
 // Settings' Shell section edits, plus the shipped defaults the shell falls back
@@ -45,16 +46,33 @@ Singleton {
     property alias obi: adapter.obi
     property alias nacre: adapter.nacre
     property alias qsbar: adapter.qsbar
+    property alias kairos: adapter.kairos
+
+    // dock: the first-class app dock surface (modules/dock). A top-level store,
+    // not a bar-style key, because the dock is now style-agnostic -- neither qsbar
+    // nor Sumi owns it. Off until the user turns it on (Hub -> Bar Studio -> Dock).
+    // Read and written through the services Dock singleton so every consumer goes
+    // through one place.
+    property alias dock: adapter.dock
+
+    // clipboard: geometry and corner treatment for the bottom-centred history
+    // surface. The adapter keeps it a self-contained shell.json subtree so it
+    // can retune live without a shell restart.
+    property alias clipboard: adapter.clipboard
     readonly property var normalizedNacre: NacreConfig.normalize(nacre)
 
     // typography: a scale that grows or shrinks the whole shell (the bar text
     // and the surfaces around it), keeping the readout legible without overflow.
     property alias fontScale:  adapter.fontScale
 
-    // fontFamily: the shell UI font, empty resolves to Space Grotesk. It is also
-    // the system font -- the daemon mirrors it to GTK (gsettings) and Qt (qt6ct)
-    // so apps match the shell. Set from Hub -> Global.
+    // fontFamily: the single system font. Empty resolves to Space Grotesk (UI)
+    // and SpaceMono (monospace/terminal); when set, the daemon mirrors it to GTK,
+    // Qt and the terminal so everything matches. Set from Hub -> Global.
     property alias fontFamily: adapter.fontFamily
+
+    // fontSize: the base point size the daemon mirrors system-wide (apps and the
+    // terminal). Set from Hub -> Global.
+    property alias fontSize: adapter.fontSize
 
     // weather: an explicit location override (a city name; blank = auto-locate by
     // IP) and the temperature unit ("auto" follows the locale, else "celsius" /
@@ -68,6 +86,38 @@ Singleton {
     // regional formats. Empty = follow the system locale. Set from the Hub's
     // Region control; a plain passthrough key in shell.json.
     property alias formatLocale: adapter.formatLocale
+
+    // screenShader: the compositor's print filter, by shader name. Persisted, and
+    // applied live through the provider, which resolves the name to its shader.
+    property alias screenShader: adapter.screenShader
+    readonly property var screenShaders: ["", "halftone", "bone", "onebit", "vignette", "grain"]
+    function setScreenShader(name) {
+        const pick = root.screenShaders.indexOf(name) >= 0 ? name : "";
+        root.screenShader = pick;
+        shaderCtl.queued += "call settings.patch "
+            + JSON.stringify({ path: "screenShader", value: pick }) + "\n";
+        if (shaderCtl.connected)
+            shaderCtl.flushQueued();
+        else
+            shaderCtl.connected = true;
+        Wm.setScreenShader(pick);
+    }
+
+    // Which surface the bar's brand logo opens: "studio" (QS Bar Settings) or
+    // "quick" (the Super+Esc quick-settings sidebar). Persisted like the shader,
+    // read by the launcher widget and set by the switch in either panel.
+    property alias launcherTarget: adapter.launcherTarget
+    function setLauncherTarget(v) {
+        const pick = (v === "quick") ? "quick" : "studio";
+        root.launcherTarget = pick;
+        shaderCtl.queued += "call settings.patch "
+            + JSON.stringify({ path: "launcherTarget", value: pick }) + "\n";
+        if (shaderCtl.connected)
+            shaderCtl.flushQueued();
+        else
+            shaderCtl.connected = true;
+    }
+
     // resolved Qt locale: the chosen region, else the system default. the
     // ".UTF-8" suffix and a BCP47 dash are normalised to what Qt.locale() wants.
     readonly property var formatLoc: {
@@ -134,14 +184,38 @@ Singleton {
             property real osdOpacity: 1
             property real fontScale: 1.3
             property string fontFamily: "Space Grotesk"
+            property int fontSize: 11
             property string weatherLocation: ""
             property string weatherUnit: "auto"
             property string formatLocale: ""
+            property string screenShader: ""
             property var frameBars: FrameBars.defaultConfig()
             property string barStyle: "qsbar"
+            property string launcherTarget: "studio"
             property var obi: ({})
             property var nacre: NacreConfig.defaultConfig()
             property var qsbar: ({})
+            property var kairos: ({})
+            property var dock: ({
+                "enabled": false,
+                "edge": "auto",
+                "autohide": true,
+                "pinned": [],
+                "magnify": true,
+                "frost": true,
+                "shadow": true,
+                "labels": true,
+                "media": false
+            })
+            property var clipboard: ({
+                "widthPercent": 65,
+                "heightPercent": 42,
+                "bottomPercent": 0,
+                "panelRadius": 18,
+                "paneRadius": 12,
+                "cardRadius": 9,
+                "pruneWeekly": false
+            })
         }
     }
 
@@ -176,6 +250,21 @@ Singleton {
         }
     }
 
+    // The daemon's control socket: shell.json is read-only here (the daemon owns
+    // it and serialises every writer), so a persisted write goes through it.
+    Socket {
+        id: shaderCtl
+        path: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/ryoku-shell.sock"
+        property string queued: ""
+        function flushQueued() {
+            if (queued.length === 0)
+                return;
+            write(queued);
+            flush();
+            queued = "";
+        }
+        onConnectionStateChanged: if (connected) flushQueued()
+    }
 
     // seed only on a genuine first run (nothing to load), so a slow or failed
     // load can't overwrite a present file with defaults.

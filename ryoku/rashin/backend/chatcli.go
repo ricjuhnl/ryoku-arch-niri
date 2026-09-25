@@ -21,7 +21,7 @@ import (
 // `chat` is the sidebar's multi-turn client: it drives the daemon's shared
 // hermes session over /ws/chat and relays each frame as one line of JSON
 // (working|delta|perm|done|error) so streamed chunks keep their newlines.
-// Flags: --image <path> (repeatable), --cancel, --new.
+// Flags: --image <path> (repeatable), --cancel, --new, --perm <id> <option>.
 
 func chatWSURL() string {
 	return fmt.Sprintf("ws://127.0.0.1:%d/ws/chat", LoadConfig().Port)
@@ -81,7 +81,7 @@ func emitModelsFrame(m wsOut) {
 	for _, mi := range m.Models {
 		arr = append(arr, map[string]any{"id": mi.ID, "name": mi.Name})
 	}
-	emitChat(map[string]any{"type": "models", "models": arr, "current": m.Current})
+	emitChat(map[string]any{"type": "models", "models": arr, "current": m.Current, "agent": m.Agent})
 }
 
 func emitCommandsFrame(m wsOut) {
@@ -142,19 +142,40 @@ func emitSkillsFrame() {
 	type skill struct{ name, desc string }
 	var found []skill
 	seen := map[string]bool{}
-	_ = filepath.WalkDir(filepath.Join(home, "skills"), func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
-			return nil
-		}
+	addSkill := func(p string) {
 		name, desc := skillMeta(p)
 		if name == "" {
 			name = filepath.Base(filepath.Dir(p))
 		}
 		if name == "" || seen[name] {
-			return nil
+			return
 		}
 		seen[name] = true
 		found = append(found, skill{name, desc})
+	}
+	// A skill is <skills>/<name>/SKILL.md, or one of a bundle at
+	// <skills>/<bundle>/skills/<name>/SKILL.md. Symlinked dirs are read through:
+	// wire links the shipped ryoku skill in, and WalkDir would skip it.
+	_ = filepath.WalkDir(filepath.Join(home, "skills"), func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			if info, statErr := os.Stat(p); statErr == nil && info.IsDir() {
+				if _, e := os.Stat(filepath.Join(p, "SKILL.md")); e == nil {
+					addSkill(filepath.Join(p, "SKILL.md"))
+				}
+				bundled, _ := filepath.Glob(filepath.Join(p, "skills", "*", "SKILL.md"))
+				for _, cand := range bundled {
+					addSkill(cand)
+				}
+			}
+			return nil
+		}
+		if d.IsDir() || d.Name() != "SKILL.md" {
+			return nil
+		}
+		addSkill(p)
 		return nil
 	})
 	sort.Slice(found, func(i, j int) bool { return found[i].name < found[j].name })
@@ -210,7 +231,7 @@ func emitHistory(ctx context.Context, c *websocket.Conn) {
 
 func cmdChat(args []string) error {
 	var images, words []string
-	var modelID, sessionID string
+	var modelID, sessionID, permID, permOption string
 	mode := "ask"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -239,6 +260,12 @@ func cmdChat(args []string) error {
 			if i+1 < len(args) {
 				i++
 				modelID = args[i]
+			}
+		case "--perm":
+			mode = "perm"
+			if i+2 < len(args) {
+				permID, permOption = args[i+1], args[i+2]
+				i += 2
 			}
 		case "--image":
 			if i+1 < len(args) {
@@ -274,6 +301,10 @@ func cmdChat(args []string) error {
 	case "new":
 		_ = wsjson.Write(ctx, c, wsIn{Type: "new"})
 		time.Sleep(200 * time.Millisecond)
+		return nil
+	case "perm":
+		_ = wsjson.Write(ctx, c, wsIn{Type: "permission", RequestID: permID, OptionID: permOption})
+		time.Sleep(150 * time.Millisecond)
 		return nil
 	case "history":
 		hctx, hcancel := context.WithTimeout(ctx, 3*time.Second)
@@ -409,7 +440,7 @@ func cmdChat(args []string) error {
 			full.WriteString(m.Text)
 			emitChat(map[string]any{"type": "delta", "text": m.Text})
 		case "permission":
-			emitChat(map[string]any{"type": "perm", "title": m.Title, "requestId": m.RequestID})
+			emitChat(map[string]any{"type": "perm", "title": m.Title, "requestId": m.RequestID, "options": m.Options})
 		case "models":
 			emitModelsFrame(m)
 		case "turn_end":

@@ -2,13 +2,14 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import shell.services
 import Ryoku.Ui.Singletons as Ui
+import "../Singletons"
 
 // System stats panel for the wallpaper: a CPU area chart, ticked metric rows, a
 // dual-line network chart, a disk-usage bar and a block of temps/battery. It is
-// a 1:1 copy of the design preview (/tmp/refimg/p3_stats.qml) — every
-// coordinate, font, size, colour and weight is verbatim; the only change is that
-// the hardcoded sample values are swapped for the live feeds. Ink stays bright
-// white as in the preview (it does not follow the wallpaper).
+// a 1:1 copy of the design preview (/tmp/refimg/p3_stats.qml): every
+// coordinate, font, size and weight is verbatim; sample values are swapped for
+// live feeds, and text ink follows the wallpaper luminance under the widget so
+// it reads on any backdrop.
 //
 // The design is built at its native 521x916 inside `box` and scaled by root.s,
 // so at s=1 the output is pixel-identical to the preview. CPU/mem/temp come from
@@ -17,7 +18,9 @@ import Ryoku.Ui.Singletons as Ui
 Item {
     id: root
 
-    property real underL: 0        // pushed by the slot; ignored (ink is fixed white)
+    property real underL: 0        // local wallpaper L* under the widget; ink adapts to it
+    // WidgetSlot pins a hex here to paint this widget's ink; "" follows the wallpaper.
+    property string inkColorA: ""
     property real s: 1             // scale (Config.statsScale)
     property bool active: true     // visible/enabled
 
@@ -82,8 +85,8 @@ Item {
         height: 916
         transform: Scale { xScale: root.s; yScale: root.s }
 
-        readonly property color ink: "#eceef2"
-        readonly property color dim: "#c7ccd4"
+        readonly property color ink: Theme.inkOn2(root.underL, root.inkColorA)
+        readonly property color dim: Theme.inkDimOn2(root.underL, root.inkColorA)
         readonly property real lx: 64      // label left
         readonly property real rx: 456     // value right edge
 
@@ -103,7 +106,9 @@ Item {
             id: cpuCanvas
             x: 64; y: 60; width: 392; height: 70
             property var pts: Sysinfo.cpuHistory
+            property color ink: box.ink
             onPtsChanged: requestPaint()
+            onInkChanged: requestPaint()
             onPaint: {
                 var c = getContext("2d"); c.reset();
                 var arr = cpuCanvas.pts || [];
@@ -114,18 +119,18 @@ Item {
                 c.beginPath(); c.moveTo(0, height);
                 for (var i=0;i<n;i++) c.lineTo(i*dx, fy(arr[i]));
                 c.lineTo(width, height); c.closePath();
-                c.fillStyle = "rgba(210,214,222,0.28)"; c.fill();
+                c.fillStyle = Qt.rgba(cpuCanvas.ink.r, cpuCanvas.ink.g, cpuCanvas.ink.b, 0.28); c.fill();
                 c.beginPath();
                 for (i=0;i<n;i++){ var yy=fy(arr[i]); if(i===0)c.moveTo(0,yy); else c.lineTo(i*dx,yy); }
-                c.lineWidth=2; c.strokeStyle="rgba(236,238,242,0.9)"; c.stroke();
+                c.lineWidth=2; c.strokeStyle=Qt.rgba(cpuCanvas.ink.r, cpuCanvas.ink.g, cpuCanvas.ink.b, 0.9); c.stroke();
             }
             Component.onCompleted: requestPaint()
         }
 
         Column {
             y: 150; width: parent.width; spacing: 0
-            Row1 { label: Ui.I18n.tr("CPU"); value: (Sysinfo.cpu*100).toFixed(1)+"%"; tick: "#8fb7c9" }
-            Row1 { label: Ui.I18n.tr("GPU"); value: StatsFeed.gpuPct+"%"; tick: "#8fb7c9" }
+            Row1 { label: "CPU"; value: (Sysinfo.cpu*100).toFixed(1)+"%"; tick: "#8fb7c9" }
+            Row1 { label: "GPU"; value: StatsFeed.gpuPct+"%"; tick: "#8fb7c9" }
             Row1 { label: Ui.I18n.tr("Memory"); value: Sysinfo.memUsedGiB.toFixed(1)+" GiB" }
             Row1 { label: Ui.I18n.tr("GPU Power"); value: StatsFeed.gpuPowerW.toFixed(0)+" W" }
         }

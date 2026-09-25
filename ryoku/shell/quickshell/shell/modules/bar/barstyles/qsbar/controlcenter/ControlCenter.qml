@@ -4,93 +4,114 @@ import Quickshell.Wayland
 import "../modules"
 import "kit"
 import "kit/Routes.js" as Routes
+import Ryoku.Ui
 import Ryoku.Ui.Singletons
 
-// The Control Center: a large route-based panel that replaces the old compact
-// ControlPanel on BOTH variants. It reads/writes state straight off `root` (the
-// qsbar Theme), so persistence and the Bar Studio bridge are untouched. Only
-// tokens present in BOTH the V1 and V2 Theme are used here.
+// QS Bar Settings: the panel the bar's 力 logo opens. It is about one thing, the
+// bar, in four routes down one rail: Bar (where it sits and how its surface
+// reads), Layout (the three lanes you arrange the widgets in), Widgets (every
+// widget as a row you show, size, colour and tune) and Dock (the app dock beside
+// it). What this panel used to also carry -- logo, spaces, pickers, desktop
+// widgets, the mid-work switches, the session -- already has a home, so it left.
+//
+// State reads and writes straight off `root` (the qsbar Theme) and the shell's
+// own services, so persistence is untouched. The chrome is paper and ink from
+// Ryoku.Ui; the bar's retinted colours appear only where they are data (the
+// silhouette, the accent swatches, the lane chips, the marker preview).
 PanelWindow {
     id: cc
     required property var root
 
-    // exposed to pages via their `cc` property
     property var tokens: tk
-    property string mode: "quick"        // "quick" | "configure"
-    property string route: ""            // "" | bars | appearance | logo | workspaces | pickers
+    property string route: "bars"
 
-    // navigation: a route id opens CONFIGURE on it; "configure"/"quick" switch mode
+    // `open(target)` keeps its old contract for the bar-logo click and the qsbar
+    // IPC (`ipc call qsbar settings <route>`): a route id shows that route, an
+    // empty/legacy target shows the first, and a retired route id (logo, spaces,
+    // pickers, desktop, system, session, appearance) maps to its nearest new home
+    // so an old caller never lands on nothing.
     function open(target) {
-        if (target === undefined || target === "" || target === "quick") { cc.mode = "quick"; cc.route = "" }
-        else if (target === "configure") { cc.mode = "configure"; cc.route = "" }
-        else { cc.mode = "configure"; cc.route = target }
-        cc.root.controlVisible = true
+        var raw = (target === undefined || target === null) ? "" : String(target);
+        cc.route = (raw === "" || raw === "quick" || raw === "configure")
+            ? "bars" : Routes.resolve(raw);
+        cc.root.controlVisible = true;
     }
     function close() { cc.root.controlVisible = false }
 
-    function pageUrlFor(m, r) {
-        if (m === "quick") return Qt.resolvedUrl("routes/QuickPage.qml")
-        if (r === "") return Qt.resolvedUrl("routes/ConfigurePage.qml")
-        var map = { "bars": "BarsRoute", "appearance": "AppearanceRoute", "logo": "LogoRoute",
-                    "workspaces": "WorkspacesRoute", "pickers": "PickersRoute" }
-        return map[r] ? Qt.resolvedUrl("routes/" + map[r] + ".qml") : Qt.resolvedUrl("routes/ConfigurePage.qml")
+    // A route can ask to open another and carry an argument (Layout's SETTINGS
+    // link lands Widgets on a chosen widget). The pending arg is read once by the
+    // target page on load, then cleared.
+    property var routeArg: null
+    function go(id, arg) {
+        cc.routeArg = (arg === undefined) ? null : arg;
+        cc.route = Routes.byId(id) ? id : "bars";
     }
 
-    // Static settings index for the predictive search: one entry per route, the
-    // notable controls inside each route, and the quick actions. `route` is where
-    // accepting an entry navigates; tags/keywords/description feed the ranking.
+    readonly property var routeDef: Routes.byId(cc.route)
+    function pageUrl() {
+        var f = Routes.fileFor(cc.route);
+        return f === "" ? Qt.resolvedUrl("routes/BarsRoute.qml") : Qt.resolvedUrl("routes/" + f + ".qml");
+    }
+
+    // Search index: one entry per route from the registry, plus the controls
+    // worth naming, scoped to the four routes. Accepting an entry navigates to
+    // its route.
     readonly property var searchEntries: cc.buildSearchIndex()
     function buildSearchIndex() {
-        var out = []
+        var out = [];
         for (var i = 0; i < Routes.ROUTES.length; i++) {
-            var r = Routes.ROUTES[i]
-            out.push({ id: r.id, name: r.label, route: r.id, category: r.label,
-                       searchTags: String(r.keywords || "").split(/\s+/), description: r.desc })
+            var r = Routes.ROUTES[i];
+            out.push({ id: r.id, name: I18n.tr(r.label), route: r.id, category: I18n.tr(r.label),
+                       searchTags: String(r.keywords || "").split(/\s+/), description: I18n.tr(r.desc) });
         }
         return out.concat([
-            { id: "bars.position", name: "Bar position", route: "bars", category: "Bars",
-              searchTags: ["top", "bottom", "edge", "position"], description: "Dock the bar to the top or bottom edge." },
-            { id: "bars.form", name: "Bar form", route: "bars", category: "Bars",
-              searchTags: ["full", "fit", "dock", "notch", "shape", "shell"], description: "Full, fit, dock or notch shell shape." },
-            { id: "bars.border", name: "Bar border", route: "bars", category: "Bars",
-              searchTags: ["outline", "frame", "stroke"], description: "Toggle the bar's outer border." },
-            { id: "bars.tooltip", name: "Panel tooltip border", route: "bars", category: "Bars",
-              searchTags: ["tooltip", "panel", "hint", "outline"], description: "Toggle borders on panel tooltips." },
-            { id: "bars.accent", name: "Accent colour", route: "bars", category: "Bars",
-              searchTags: ["colour", "color", "seal", "palette", "tint"], description: "Pick the bar accent from the palette." },
-            { id: "bars.layout", name: "Edit layout", route: "bars", category: "Bars",
-              searchTags: ["arrange", "reorder", "widgets", "move", "unlock"], description: "Rearrange the bar's widgets." },
-            { id: "bars.restore", name: "Restore layout", route: "bars", category: "Bars",
-              searchTags: ["reset", "default", "revert"], description: "Reset all bars to defaults." },
-            { id: "appearance.visibility", name: "Widget visibility", route: "appearance", category: "Appearance",
-              searchTags: ["show", "hide", "widgets", "toggle"], description: "Show or hide bar widgets." },
-            { id: "appearance.colour", name: "Per-widget colour", route: "appearance", category: "Appearance",
-              searchTags: ["colour", "color", "tint", "fill", "accent"], description: "Assign an accent to individual widgets." },
-            { id: "appearance.compact", name: "Compact widgets", route: "appearance", category: "Appearance",
-              searchTags: ["density", "compact", "tight", "small"], description: "Tighten widget spacing." },
-            { id: "logo.wordmark", name: "Launcher wordmark", route: "logo", category: "Logo",
-              searchTags: ["text", "word", "brand", "ryoku", "name"], description: "Show the launcher as a wordmark." },
-            { id: "logo.kanji", name: "Launcher mark", route: "logo", category: "Logo",
-              searchTags: ["icon", "kanji", "glyph", "mark", "symbol"], description: "Show the launcher as a kanji mark." },
-            { id: "workspaces.count", name: "Workspace count", route: "workspaces", category: "Workspaces",
-              searchTags: ["active", "five", "ten", "5", "10", "number"], description: "How many workspaces to show." },
-            { id: "workspaces.marker", name: "Workspace marker", route: "workspaces", category: "Workspaces",
-              searchTags: ["dots", "numbers", "glyph", "magic", "style", "default"], description: "Marker style: dots, numbers or glyph." },
-            { id: "pickers.tanzaku", name: "Tanzaku picker", route: "pickers", category: "Pickers",
-              searchTags: ["strip", "list", "tanzaku"], description: "Use the tanzaku picker style." },
-            { id: "pickers.hearthstone", name: "Hearthstone picker", route: "pickers", category: "Pickers",
-              searchTags: ["fan", "cards", "hearthstone"], description: "Use the hearthstone picker style." },
-            { id: "pickers.carousel", name: "Carousel picker", route: "pickers", category: "Pickers",
-              searchTags: ["wheel", "spin", "carousel"], description: "Use the carousel picker style." },
-            { id: "quick.reload", name: "Reload shell", route: "quick", category: "Quick",
-              searchTags: ["restart", "refresh", "reload"], description: "Restart the Quickshell session." },
-            { id: "quick.lock", name: "Lock screen", route: "quick", category: "Quick",
-              searchTags: ["lock", "hyprlock", "secure"], description: "Lock the session." },
-            { id: "quick.reboot", name: "Reboot", route: "quick", category: "Quick",
-              searchTags: ["restart", "reboot"], description: "Restart the machine." },
-            { id: "quick.shutdown", name: "Shut down", route: "quick", category: "Quick",
-              searchTags: ["poweroff", "shutdown", "power"], description: "Power off the machine." }
-        ])
+            { id: "bars.position", name: I18n.tr("Bar position"), route: "bars", category: I18n.tr("Bar"),
+              searchTags: ["top", "bottom", "edge"], description: I18n.tr("Which edge the bar docks to.") },
+            { id: "bars.form", name: I18n.tr("Bar form"), route: "bars", category: I18n.tr("Bar"),
+              searchTags: ["full", "fit", "dock", "notch", "islands", "shape"], description: I18n.tr("The shell shape the bar takes.") },
+            { id: "bars.surface", name: I18n.tr("Bar surface"), route: "bars", category: I18n.tr("Bar"),
+              searchTags: ["border", "corners", "frost", "shadow", "depth", "tooltip"], description: I18n.tr("Border, corners, frost, shadow and tooltip border.") },
+            { id: "bars.gaps", name: I18n.tr("Bar gaps"), route: "bars", category: I18n.tr("Bar"),
+              searchTags: ["gap", "margin", "edge", "top", "bottom", "left", "right"], description: I18n.tr("How far the bar stays off each output edge.") },
+            { id: "bars.accent", name: I18n.tr("Accent colour"), route: "bars", category: I18n.tr("Bar"),
+              searchTags: ["colour", "color", "seal", "palette", "slot"], description: I18n.tr("Which palette slot the bar draws its accent from.") },
+            { id: "bars.motion", name: I18n.tr("Gap animation"), route: "bars", category: I18n.tr("Bar"),
+              searchTags: ["motion", "stream", "reactor", "animation"], description: I18n.tr("The stream that flows in the gaps between widgets.") },
+            { id: "bars.scale", name: I18n.tr("Bar size"), route: "bars", category: I18n.tr("Bar"),
+              searchTags: ["scale", "size", "height", "bigger"], description: I18n.tr("Scale the bar without changing display scaling.") },
+            { id: "layout.arrange", name: I18n.tr("Arrange widgets"), route: "layout", category: I18n.tr("Layout"),
+              searchTags: ["move", "reorder", "order", "left", "center", "right", "lane"], description: I18n.tr("Move widgets across the three lanes.") },
+            { id: "layout.add", name: I18n.tr("Add a widget"), route: "layout", category: I18n.tr("Layout"),
+              searchTags: ["add", "hidden", "plugin", "ryostore", "more"], description: I18n.tr("Add a hidden built-in or an installed plugin to the bar.") },
+            { id: "layout.unlock", name: I18n.tr("Unlock the bar"), route: "layout", category: I18n.tr("Layout"),
+              searchTags: ["unlock", "drag", "rearrange", "in place"], description: I18n.tr("Drag the widgets around on the bar itself.") },
+            { id: "layout.reset", name: I18n.tr("Reset layout"), route: "layout", category: I18n.tr("Layout"),
+              searchTags: ["reset", "restore", "default"], description: I18n.tr("Restore the shipped order and visibility.") },
+            { id: "widgets.visibility", name: I18n.tr("Widget visibility"), route: "widgets", category: I18n.tr("Widgets"),
+              searchTags: ["show", "hide", "on", "off"], description: I18n.tr("Which widgets the bar carries.") },
+            { id: "widgets.density", name: I18n.tr("Widget density"), route: "widgets", category: I18n.tr("Widgets"),
+              searchTags: ["density", "icon", "compact", "full"], description: I18n.tr("Draw a widget icon-only or in full.") },
+            { id: "widgets.colour", name: I18n.tr("Per-widget colour"), route: "widgets", category: I18n.tr("Widgets"),
+              searchTags: ["colour", "color", "tint", "fill", "frame"], description: I18n.tr("Give one widget its own accent.") },
+            { id: "identity.launcher", name: I18n.tr("Launcher mark"), route: "identity", category: I18n.tr("Identity"),
+              searchTags: ["launcher", "logo", "wordmark", "kanji", "glyph", "brand"], description: I18n.tr("The mark in the launcher pill.") },
+            { id: "identity.workspaces", name: I18n.tr("Workspace marker"), route: "identity", category: I18n.tr("Identity"),
+              searchTags: ["workspace", "spaces", "marker", "dots", "numbers", "kanji", "pacman", "aurora", "count"], description: I18n.tr("How many workspaces the bar shows and the marker each wears.") },
+            { id: "widgets.ai", name: I18n.tr("AI usage tools"), route: "widgets", category: I18n.tr("Widgets"),
+              searchTags: ["ai", "claude", "codex", "opencode", "usage"], description: I18n.tr("Which coding-agent meters the AI pill shows.") },
+            { id: "dock.enabled", name: I18n.tr("Dock"), route: "dock", category: I18n.tr("Dock"),
+              searchTags: ["dock", "apps", "pinned"], description: I18n.tr("The app dock on the opposite edge.") },
+            { id: "dock.edge", name: I18n.tr("Dock edge"), route: "dock", category: I18n.tr("Dock"),
+              searchTags: ["edge", "top", "bottom", "left", "right", "auto"], description: I18n.tr("Which edge the dock sits on.") },
+            { id: "dock.autohide", name: I18n.tr("Dock auto-hide"), route: "dock", category: I18n.tr("Dock"),
+              searchTags: ["hide", "peek", "reveal"], description: I18n.tr("Keep the dock as a peek strip until hovered.") },
+            { id: "dock.pinned", name: I18n.tr("Pinned apps"), route: "dock", category: I18n.tr("Dock"),
+              searchTags: ["pin", "pinned", "app", "add", "remove"], description: I18n.tr("The apps the dock always shows.") },
+            { id: "community.installed", name: I18n.tr("Community widgets"), route: "community", category: I18n.tr("Community"),
+              searchTags: ["plugin", "plugins", "installed", "third", "party", "remove", "uninstall"], description: I18n.tr("Bar widgets installed from outside Ryoku.") },
+            { id: "community.add", name: I18n.tr("Add from git or Ryostore"), route: "community", category: I18n.tr("Community"),
+              searchTags: ["git", "url", "ryostore", "store", "install", "add"], description: I18n.tr("Install a community bar widget.") }
+        ]);
     }
 
     screen: cc.root.activePopupScreen
@@ -105,156 +126,191 @@ PanelWindow {
     Behavior on reveal {
         NumberAnimation {
             duration: cc.root.controlVisible ? tk.revealOpen : tk.revealClose
-            easing.type: cc.root.controlVisible ? Easing.OutCubic : Easing.InCubic
+            easing.type: Easing.OutCubic
         }
     }
     visible: reveal > 0.001
-    onRevealChanged: if (reveal < 0.01) { cc.mode = "quick"; cc.route = "" }
+    onRevealChanged: if (reveal < 0.01) { cc.route = "bars"; cc.routeArg = null; searchOverlay.shown = false }
 
     CcTokens { id: tk; root: cc.root }
 
     readonly property int barH: cc.root.v2BarHeight
-    readonly property int cardW: Math.min(tk.cardW, cc.width - 2 * tk.screenMargin)
-    readonly property int cardH: Math.min(tk.cardH, cc.height - cc.barH - 2 * tk.screenMargin - 8)
+    readonly property int plateW: Math.min(tk.plateW, cc.width - 2 * tk.screenMargin)
+    // The plate is as tall as it needs to be: the rail's natural height or the
+    // page's, whichever is taller, capped by the screen and by tk.plateH. A short
+    // route therefore yields a short panel rather than a screenful of empty
+    // paper, and a long one scrolls inside the cap.
+    readonly property int plateCap: Math.min(tk.plateH, cc.height - cc.barH - 2 * tk.screenMargin - tk.gap)
+    readonly property int plateH: Math.max(Math.min(rail.implicitHeight, cc.plateCap),
+        Math.min(cc.plateCap, tk.headH + tk.pad * 2 + tk.sectionGap + stage.pageHeight))
 
-    // click-outside to dismiss
-    MouseArea { anchors.fill: parent; onClicked: cc.close() }
+    // A click anywhere off the plate dismisses, the way every other popout on this
+    // bar behaves. It sits below the plate, so the plate's own eater still wins.
+    MouseArea {
+        anchors.fill: parent
+        enabled: cc.root.controlVisible
+        acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+        onPressed: cc.close()
+    }
 
     Rectangle {
-        id: card
-        width: cc.cardW
-        height: (stage.item && stage.item.implicitHeight > 0)
-            ? Math.min(cc.cardH, chromeCol.implicitHeight + tk.gap + tk.pad * 2 + stage.item.implicitHeight)
-            : cc.cardH
-        Behavior on height { NumberAnimation { duration: tk.pageIn; easing.type: Easing.OutCubic } }
-        radius: cc.root.pillRadius
-        color: cc.root.bg
+        id: plate
+        width: cc.plateW
+        height: cc.plateH
+        // Routes have different natural heights, so the plate resizes on every
+        // switch. Snapping made the panel feel like a slideshow of dialogs; on the
+        // house spatial curve it reads as one surface changing its mind. It only
+        // animates once open, so revealing the panel never plays two motions.
+        Behavior on height {
+            enabled: cc.reveal > 0.99
+            NumberAnimation {
+                duration: Tokens.durDefaultSpatial
+                easing.type: Easing.Bezier
+                easing.bezierCurve: Tokens.curveDefaultSpatial
+            }
+        }
+        radius: tk.corner
+        color: Tokens.paper
         border.width: 1
-        border.color: cc.root.sep
+        border.color: Tokens.line
+        clip: true
+
+        // it floats over the desktop, so it is the one surface here allowed a
+        // shadow (docs/ui-ux.md: depth is a hairline, except when something
+        // genuinely floats).
         PillShadow { theme: cc.root }
 
-        x: Math.round(Math.max(tk.screenMargin, Math.min(cc.root.launcherBarX - 80, cc.width - width - tk.screenMargin)))
-        y: (cc.root.barPosition === "bottom" ? (cc.height - cc.barH - 8 - height) : (cc.barH + 8))
-           + (cc.root.barPosition === "bottom" ? 6 : -6) * (1 - cc.reveal)
+        x: Math.round(Math.max(tk.screenMargin,
+            Math.min(cc.root.launcherBarX - tk.gap, cc.width - width - tk.screenMargin)))
+        y: (cc.root.barPosition === "bottom" ? (cc.height - cc.barH - tk.gap - height) : (cc.barH + tk.gap))
+           + (cc.root.barPosition === "bottom" ? tk.gap : -tk.gap) * (1 - cc.reveal)
         opacity: cc.reveal
-        scale: 0.98 + 0.02 * cc.reveal
         transformOrigin: cc.root.barPosition === "bottom" ? Item.Bottom : Item.Top
         focus: cc.root.controlVisible
-        Keys.onPressed: function(e) { if (e.key === Qt.Key_Escape) { cc.close(); e.accepted = true } }
+        Keys.onPressed: function (e) {
+            if (e.key === Qt.Key_Escape) {
+                if (searchOverlay.shown) searchOverlay.shown = false;
+                else cc.close();
+                e.accepted = true;
+            }
+        }
         MouseArea { anchors.fill: parent; onClicked: {} }   // eat clicks so they don't dismiss
 
-        // CTRL K focuses the search field from anywhere in the open panel.
         Shortcut {
             sequence: "Ctrl+K"
             context: Qt.WindowShortcut
             enabled: cc.root.controlVisible
-            onActivated: search.focusInput()
+            onActivated: searchOverlay.shown = true
         }
 
-        Column {
-            id: chromeCol
-            anchors { top: parent.top; left: parent.left; right: parent.right; margins: tk.pad }
-            spacing: tk.gap
+        CcRail {
+            id: rail
+            anchors { top: parent.top; bottom: parent.bottom; left: parent.left }
+            width: tk.railW
+            root: cc.root
+            tk: tk
+            current: cc.route
+            onChose: (id) => cc.route = id
+            onSearchRequested: searchOverlay.shown = true
+            onHubRequested: { Spawn.run(["sh", "-c", "flock -n -o /tmp/ryoku-hub.lock qs -c hub"]); cc.close(); }
+        }
 
-            CcHeader { width: parent.width; root: cc.root; mode: cc.mode; route: cc.route; onClosed: cc.close() }
-            Rectangle { width: parent.width; height: 1; color: cc.root.sep }
+        Item {
+            id: body
+            anchors {
+                top: parent.top; bottom: parent.bottom
+                left: rail.right; right: parent.right
+                topMargin: tk.pad; bottomMargin: tk.pad
+                leftMargin: tk.pad; rightMargin: tk.pad
+            }
+
+            CcHead {
+                id: head
+                anchors { top: parent.top; left: parent.left; right: parent.right }
+                root: cc.root
+                tk: tk
+                title: cc.routeDef ? I18n.tr(cc.routeDef.label) : ""
+                gloss: cc.routeDef ? cc.routeDef.gloss : ""
+                desc: cc.routeDef ? I18n.tr(cc.routeDef.desc) : ""
+                index: Routes.indexOf(cc.route)
+                onClosed: cc.close()
+            }
+
+            PageMotionStage {
+                id: stage
+                anchors {
+                    top: head.bottom; topMargin: tk.sectionGap
+                    left: parent.left; right: parent.right; bottom: parent.bottom
+                }
+                root: cc.root
+                cc: cc
+                outMs: tk.pageOut
+                inMs: tk.pageIn
+                pageUrl: cc.pageUrl()
+            }
+        }
+
+        // A page longer than the plate is cut by the plate's clip, and a row sliced
+        // in half reads as a broken layout rather than "there is more below". This
+        // dissolves the cut into the paper, and only while there IS more below:
+        // a page that fits, or one scrolled to its end, shows every row at full
+        // ink. `clip` is rectangular and ignores the plate's radius, so the fade
+        // carries the corner itself or it squares it.
+        Rectangle {
+            anchors { left: rail.right; right: parent.right; bottom: parent.bottom }
+            height: tk.pad + tk.tailPad
+            bottomRightRadius: tk.corner
+            visible: opacity > 0.001
+            opacity: stage.overflowBelow ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: tk.fade } }
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: "transparent" }
+                GradientStop { position: 0.6; color: Qt.rgba(Tokens.paper.r, Tokens.paper.g, Tokens.paper.b, 0.8) }
+                GradientStop { position: 1.0; color: Tokens.paper }
+            }
+        }
+
+        // Search is a feature, not a permanent band across the top: it opens over
+        // the body on Ctrl K or from the rail's foot, and closes on Escape.
+        Item {
+            id: searchOverlay
+            property bool shown: false
+            anchors.fill: body
+            visible: opacity > 0.001
+            opacity: searchOverlay.shown ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: tk.fade } }
+            onShownChanged: if (searchOverlay.shown) search.focusInput()
+
+            Rectangle {
+                anchors.fill: parent
+                color: Tokens.paper
+                opacity: 0.96
+            }
             CcSearch {
                 id: search
-                width: parent.width
+                anchors { top: parent.top; left: parent.left; right: parent.right }
                 root: cc.root
+                tk: tk
                 entries: cc.searchEntries
-                onAccepted: (entry) => cc.open(entry.route)
-            }
-            Item {
-                width: parent.width
-                height: 30
-                CcTabs {
-                    anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
-                    root: cc.root; current: cc.mode
-                    onChose: (m) => { cc.mode = m; cc.route = "" }
+                onAccepted: (entry) => {
+                    searchOverlay.shown = false;
+                    cc.route = entry.route;
                 }
-                CcStatusStrip {
-                    anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                    width: Math.min(360, parent.width * 0.46)
-                    root: cc.root
-                }
+                onDismissed: searchOverlay.shown = false
             }
         }
 
-        // Compact route rail beside an open editor, so every route stays one click
-        // away instead of the editor being a dead end.
-        Column {
-            id: routeRail
-            visible: cc.mode === "configure" && cc.route !== ""
-            anchors {
-                top: chromeCol.bottom; topMargin: tk.gap
-                left: parent.left; leftMargin: tk.pad
-            }
-            width: visible ? 148 : 0
-            spacing: 4
-
-            Repeater {
-                model: Routes.ROUTES
-                delegate: Rectangle {
-                    id: railCard
-                    required property var modelData
-                    readonly property bool on: cc.route === railCard.modelData.id
-                    width: routeRail.width
-                    height: 34
-                    radius: cc.root.tileRadius
-                    color: railCard.on ? cc.root.fillActive
-                        : (railMa.containsMouse ? cc.root.fillHover : "transparent")
-                    border.width: 1
-                    border.color: railCard.on ? cc.root.seal
-                        : (railMa.containsMouse ? cc.root.sep : "transparent")
-                    Behavior on color { ColorAnimation { duration: 120 } }
-                    Behavior on border.color { ColorAnimation { duration: 120 } }
-
-                    IconText {
-                        id: railIcon
-                        anchors.left: parent.left
-                        anchors.leftMargin: 9
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: railCard.modelData.icon
-                        color: railCard.on ? cc.root.seal : cc.root.sumiHi
-                        font.pixelSize: 15
-                    }
-                    UiText {
-                        anchors.left: railIcon.right
-                        anchors.leftMargin: 8
-                        anchors.right: parent.right
-                        anchors.rightMargin: 8
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: I18n.tr(railCard.modelData.label)
-                        color: railCard.on ? cc.root.ink : cc.root.sumi
-                        font.family: cc.root.mono
-                        font.pixelSize: 12
-                        font.weight: railCard.on ? Font.DemiBold : Font.Normal
-                        elide: Text.ElideRight
-                    }
-                    MouseArea {
-                        id: railMa
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: cc.route = railCard.modelData.id
-                    }
-                }
-            }
+        // Instrument-panel corner ticks: the panel's frame chrome, the same
+        // L-bracket vocabulary Decor's art panel and the reference sheet use. It
+        // marks the plate as a registered surface. Anchored to the plate and inset
+        // past its corner radius, so the frame reframes as the plate resizes on a
+        // route change rather than sitting outside the motion.
+        Item {
+            anchors.fill: parent
+            anchors.margins: tk.corner
+            z: 10
+            Ticks { color: Tokens.line; arm: 10 }
         }
-        PageMotionStage {
-            id: stage
-            anchors {
-                top: chromeCol.bottom; topMargin: tk.gap
-                left: parent.left; right: parent.right; bottom: parent.bottom
-                leftMargin: tk.pad + (routeRail.visible ? routeRail.width + tk.gap : 0)
-                rightMargin: tk.pad; bottomMargin: tk.pad
-            }
-            root: cc.root
-            cc: cc
-            outMs: tk.pageOut
-            inMs: tk.pageIn
-            pageUrl: cc.pageUrlFor(cc.mode, cc.route)
-        }
+
     }
 }

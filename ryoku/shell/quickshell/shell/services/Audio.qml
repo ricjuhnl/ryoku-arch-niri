@@ -4,6 +4,8 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Bluetooth
 import Quickshell.Services.Pipewire
+import Ryoku.Ui.Singletons
+import shell.services
 
 // audio graph for the mixer: classifies Pipewire nodes into output devices,
 // input devices, and per-app playback streams; switches the default sink/source
@@ -25,12 +27,22 @@ Singleton {
         return (n && typeof PwNodeType !== "undefined") ? PwNodeType.toString(n.type) : "";
     }
 
+    // The equalizer's filter pair (see ryoku-eq). WirePlumber splices it in front
+    // of the real device and never treats it as a default node, so it is plumbing
+    // rather than a device or an app: listing it would show the speakers twice in
+    // the mixer and offer a "Ryoku Equalizer" output nobody should pick. Matched on
+    // node.name, a constant, so this never reads an untracked property.
+    function isShellFilter(n) {
+        return ((n && n.name) + "").indexOf("ryoku_equalizer") === 0;
+    }
+
     // a real, switchable output/input device (not a stream).
-    function isOutput(n) { return !!(n && n.isSink && !n.isStream && n.audio); }
-    function isInput(n) { return !!(n && !n.isSink && !n.isStream && n.audio); }
+    function isOutput(n) { return !!(n && n.isSink && !n.isStream && n.audio && !root.isShellFilter(n)); }
+    function isInput(n) { return !!(n && !n.isSink && !n.isStream && n.audio && !root.isShellFilter(n)); }
     // an application feeding the graph (playback, not capture). per-app here.
     function isPlayStream(n) {
-        return !!(n && n.isStream && n.audio && root.typeOf(n).indexOf("In") < 0);
+        return !!(n && n.isStream && n.audio && root.typeOf(n).indexOf("In") < 0
+            && !root.isShellFilter(n));
     }
 
     // an application capturing from the graph -- a screen recorder, a call, a
@@ -51,10 +63,31 @@ Singleton {
     // to these: rebuilding a Repeater from the live list while Pipewire is
     // mid-dispatch of a node removal has crashed Quickshell's Pipewire service.
     // Every consumer binds to the settled snapshots below instead.
-    readonly property var liveOutputs: root.nodes.filter(root.isOutput)
-    readonly property var liveInputs: root.nodes.filter(root.isInput)
+    // Dedup devices by node.name: some graphs (seen on multi-card boxes) surface
+    // the same sink/source node more than once, which listed a device several
+    // times and lit every copy as "default". Streams are left alone -- two
+    // instances of one app share an app name but are distinct nodes to mix.
+    readonly property var liveOutputs: root.dedupByName(root.nodes.filter(root.isOutput))
+    readonly property var liveInputs: root.dedupByName(root.nodes.filter(root.isInput))
     readonly property var liveStreams: root.nodes.filter(root.isPlayStream)
     readonly property var liveCaptureStreams: root.nodes.filter(root.isCaptureStream)
+
+    // Collapse nodes sharing a node.name, keeping the first. node.name is a
+    // device's stable identity (alsa_output.pci-..., bluez_output.<mac>...), so
+    // this removes true duplicates without merging two distinct devices.
+    function dedupByName(list) {
+        var seen = ({});
+        var out = [];
+        for (var i = 0; i < list.length; i++) {
+            var n = list[i];
+            var key = (n && n.name) ? ("" + n.name) : ("__i" + i);
+            if (seen[key])
+                continue;
+            seen[key] = true;
+            out.push(n);
+        }
+        return out;
+    }
 
     // Settled snapshots the whole shell binds to (the bar audio widget, the
     // volume panel, the framebar menus, the popout, the visualiser). A short
@@ -93,10 +126,19 @@ Singleton {
     // track every node we show so its properties (media/app/codec metadata) and
     // live audio (volume, mute) populate. classification above reads only the
     // node's constant flags, so this never deadlocks on untracked properties.
-    // Tracked from the LIVE lists so metadata populates without the settle delay.
+    //
+    // Track the SETTLED lists, not the live ones. Rewriting a PwObjectTracker's
+    // object set inside Pipewire's node-removal dispatch mutates Quickshell's
+    // Pipewire structures mid-teardown -- the same hazard the view snapshots above
+    // avoid -- and a mass reset (a device flap, "Device or resource busy") churns
+    // the live lists on every single removal. The settled lists already exclude a
+    // node by the time the debounce fires, so the tracker never re-tracks across a
+    // dying node. The two default devices stay live so the bar volume/mute read
+    // immediately; they are single objects, not the per-removal churn, and no view
+    // shows a node before it reaches the settled list, so this costs no immediacy.
     PwObjectTracker {
         objects: [root.sink, root.source].filter(Boolean)
-            .concat(root.liveOutputs).concat(root.liveInputs).concat(root.liveStreams).concat(root.liveCaptureStreams)
+            .concat(root.outputs).concat(root.inputs).concat(root.streams).concat(root.captureStreams)
     }
 
     // --- device presentation ------------------------------------------------
@@ -105,7 +147,7 @@ Singleton {
         if (!n)
             return "";
         var p = n.properties || ({});
-        return n.description || n.nickname || p["node.description"] || n.name || "Audio device";
+        return n.description || n.nickname || p["node.description"] || n.name || I18n.tr("Audio device");
     }
 
     // a GlyphIcon name for a device, from its bluez-ness / icon hint / port.
@@ -199,8 +241,8 @@ Singleton {
         if (!root.btProfile.length)
             return "";
         if (root.isHeadset())
-            return "Headset";
-        return root.btProfile.indexOf("a2dp") >= 0 ? "Hi-Fi" : root.btProfile;
+            return I18n.tr("Headset");
+        return root.btProfile.indexOf("a2dp") >= 0 ? I18n.tr("Hi-Fi") : root.btProfile;
     }
 
     // flip the active bluez card between a2dp playback and headset mode.
@@ -245,14 +287,14 @@ Singleton {
 
     function streamName(n) {
         var p = (n && n.properties) ? n.properties : ({});
-        return p["application.name"] || p["media.name"] || (n ? n.description : "") || "Application";
+        return p["application.name"] || p["media.name"] || (n ? n.description : "") || I18n.tr("Application");
     }
 
     function streamIcon(n) {
         var p = (n && n.properties) ? n.properties : ({});
         var named = (p["application.icon-name"] || "") + "";
         if (named.length) {
-            var direct = Quickshell.iconPath(named, true);
+            var direct = Icons.path(named, true);
             if (direct.length)
                 return direct;
         }
@@ -261,12 +303,12 @@ Singleton {
             var e = (typeof DesktopEntries !== "undefined" && DesktopEntries.heuristicLookup)
                 ? DesktopEntries.heuristicLookup(bin) : null;
             if (e && e.icon)
-                return Quickshell.iconPath(e.icon, "application-x-executable");
-            var byBin = Quickshell.iconPath(bin, true);
+                return Icons.path(e.icon, "application-x-executable");
+            var byBin = Icons.path(bin, true);
             if (byBin.length)
                 return byBin;
         }
-        return Quickshell.iconPath("application-x-executable", true);
+        return Icons.path("application-x-executable", true);
     }
 
     Process {

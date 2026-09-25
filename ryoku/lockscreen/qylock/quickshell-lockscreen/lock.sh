@@ -7,6 +7,17 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export QML2_IMPORT_PATH="$DIR/imports:$QML2_IMPORT_PATH"
 export QML_XHR_ALLOW_FILE_READ=1
 
+# The lock is spawned by the shell daemon, a systemd user service whose env is
+# whatever was imported at login; a daemon (re)started outside that import has
+# no XCURSOR_*, Qt falls back to the "default" theme, and where that resolves to
+# nothing the lock surface sets a null cursor: no visible pointer. Default to
+# the shipped Bibata set (ryoku-cursors) at the size env.lua uses. A session
+# that exported its own theme keeps it.
+export XCURSOR_THEME="${XCURSOR_THEME:-Bibata-Modern-Ice}"
+export XCURSOR_SIZE="${XCURSOR_SIZE:-24}"
+export HYPRCURSOR_THEME="${HYPRCURSOR_THEME:-$XCURSOR_THEME}"
+export HYPRCURSOR_SIZE="${HYPRCURSOR_SIZE:-$XCURSOR_SIZE}"
+
 # Get session type: the env when set, else this session's logind record.
 # XDG_SESSION_ID pins the right session; scraping `loginctl | grep user`
 # picked the first of several (re-login, nested session) and could misread.
@@ -53,6 +64,13 @@ fi
 echo "Locking with Quickshell using theme: $QS_THEME"
 echo "Theme path: $QS_THEME_PATH"
 
+
+# Some compositors draw the lock-surface pointer from a compositor-set cursor,
+# not the client's XCURSOR env, so re-assert it through the provider (a no-op
+# where the provider has no imperative cursor set).
+if [ "$XDG_SESSION_TYPE" = wayland ] && command -v ryoku >/dev/null 2>&1; then
+    ryoku wm act cursor.set "$XCURSOR_THEME" "$XCURSOR_SIZE" >/dev/null 2>&1 || true
+fi
 # Kill active lockers
 killall -9 hyprlock swaylock wlogout 2>/dev/null || true
 

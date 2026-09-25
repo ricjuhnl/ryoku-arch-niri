@@ -2,7 +2,51 @@
 
 ## Unreleased
 
+- **The GPU MUX knob is GUI-reachable without a terminal.** `ryoku-gpu-mux
+  set` escalates through pkexec under a scoped polkit grant
+  (`hardware/gpu/45-ryoku-gpu-mux.rules`, wheel, the one program), so the
+  Hub's Machine page can flip display routing; the change still only takes
+  effect at a reboot the user performs.
+
+
+- **The base set no longer installs Spotify.** `spotify-launcher`,
+  `spicetify-cli` and `spicetify-marketplace` are out of
+  `system/packages/base.packages`; Ryotunes is the music app a fresh install
+  gets. A Spotify a user installs themselves is untouched.
+
+- **`ryoku update` no longer deadlocks on the Oh My Zsh swap.** CachyOS-era
+  installs carry `cachyos-zsh-config`, which depends on `oh-my-zsh-git`;
+  ryoku-oh-my-zsh previously conflicted with that package without providing
+  it, so pacman offered the removal and then refused it ("removing
+  oh-my-zsh-git breaks dependency"), failing every full upgrade. The package
+  now version-provides, conflicts with and replaces both `oh-my-zsh` and
+  `oh-my-zsh-git`, so `-Syu` swaps the AUR tree in one transaction. This same
+  package contract serves existing systems, the script installer and the ISO
+  package closure (`release/packages/ryoku-oh-my-zsh/PKGBUILD`).
+
+- **CachyOS's Qt5 SDDM greeter now has its native Wayland platform plugin.**
+  `qt6-wayland` cannot supply a QPA plugin to a Qt5 process; base installs and
+  the `ryoku-desktop` dependency closure now include `qt5-wayland`, so the
+  Wayland greeter starts on fresh ISO installs, script conversions, and
+  existing systems after an update.
+
+- **The render pin now covers laptops.** `ryoku-gpu` pinned the strongest GPU
+  only on desktops, so a hybrid laptop composited, blurred and decoded video on
+  its iGPU -- the same die as the CPU -- and the package cooked while a discrete
+  GPU sat parked. The default policy now pins the discrete GPU everywhere; the
+  graphics mode the user chose is stamped into gpu.lua
+  (`-- ryoku-gpu-mode: hybrid|performance|passthrough`) and login-time
+  `persist` honours it, so Hybrid stays an explicit opt-out for battery.
+  `check-pin` grew a `missing-pin` verdict so the ryoku doctor writes the pin
+  on machines the old policy left unpinned, and `mode performance` names the
+  reboot-gated `ryoku-gpu-mux set discrete` step on MUX laptops
+  (`system/hardware/gpu/ryoku-gpu`, `tests/gpu-pin-policy.sh`).
+
 ### Added
+- `ttf-maple-mono-nf` (release/packages + base.packages): Maple Mono, Nerd Font
+  variant, shipped from [ryoku] as the upstream prebuilt NF release so it
+  pacstraps on install and updates with `ryoku update`. Offered as the monospace
+  font in Hub > Global.
 - `containers/ryoku-docker` and `containers/46-ryoku-docker.rules`: the one
   privileged door for container work, which is what makes the stash "Cobalt
   engine" switch a switch instead of a chore list. Verbs: `state` (read-only

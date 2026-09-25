@@ -88,6 +88,36 @@ eq(
     "multiword search preserves source order"
 );
 
+// A paused item stays listed but cannot be downloaded: every action surface
+// reads it as under construction and shows the catalogue's reason, while the
+// underlying install state stays visible so an installed copy is still removable.
+const paused = { installed: false, downloadPaused: true, downloadPauseReason: "Has known issues. The developer is working on fixes." };
+const pausedInstalled = { installed: true, active: true, downloadPaused: true, downloadPauseReason: "Broken on Wayland." };
+eq(Store.isDownloadPaused(paused), true, "paused item is detected");
+eq(Store.isDownloadPaused({ installed: false }), false, "unpaused item is not paused");
+eq(Store.downloadPauseReason(paused), "Has known issues. The developer is working on fixes.", "pause reason is surfaced when paused");
+eq(Store.downloadPauseReason({ downloadPauseReason: "stale" }), "", "reason is empty unless the item is paused");
+eq(Store.primaryAction(paused), "UNDER CONSTRUCTION", "paused item cannot be installed");
+eq(Store.primaryAction({ installed: true, busy: true, downloadPaused: true }), "UNDER CONSTRUCTION", "pause overrides every other action state");
+eq(Store.statusLabels(paused), ["UNDER CONSTRUCTION"], "paused uninstalled item drops the contradictory AVAILABLE label");
+eq(Store.statusLabels(pausedInstalled), ["UNDER CONSTRUCTION", "ACTIVE"], "paused installed item keeps its state so remove stays reachable");
+
+// A product written for another window manager is greyed out, never offered: its
+// chip and its disabled action both name the window manager it wants, taken from
+// the product rather than from a list in the UI. The backend refuses the install
+// as well, so this is presentation only; an installed copy stays removable.
+const foreign = { installed: false, unavailable: true, requiredWindowManager: "wm-a", unavailableReason: "Built for wm-a." };
+const foreignInstalled = { installed: true, active: true, unavailable: true, requiredWindowManager: "wm-a", unavailableReason: "Built for wm-a." };
+eq(Store.isUnavailable(foreign), true, "a product for another window manager is detected");
+eq(Store.isUnavailable({ installed: false }), false, "an ordinary product is not unavailable");
+eq(Store.unavailableLabel(foreign), "WM-A ONLY", "the chip names the window manager the product wants");
+eq(Store.unavailableLabel({ unavailable: true }), "UNAVAILABLE", "a product that names none still reads as unavailable");
+eq(Store.unavailableReason(foreign), "Built for wm-a.", "the catalogue's reason is surfaced");
+eq(Store.unavailableReason({ unavailableReason: "stale" }), "", "reason is empty unless the product is unavailable");
+eq(Store.primaryAction(foreign), "WM-A ONLY", "the disabled action names the window manager too");
+eq(Store.statusLabels(foreign), ["WM-A ONLY"], "unavailable uninstalled item drops the contradictory AVAILABLE label");
+eq(Store.statusLabels(foreignInstalled), ["WM-A ONLY", "ACTIVE"], "unavailable installed item keeps its state so remove stays reachable");
+
 // Discover rotates on a daily seed: stable within a day, varies across days, and
 // never drops or invents an item. No seed keeps the legacy deterministic order.
 const disc = [
@@ -116,5 +146,41 @@ const snapshot = JSON.stringify(items);
 Store.filter(items, { query: "installed" });
 Store.groupSearch(items, "clock");
 eq(JSON.stringify(items), snapshot, "helpers do not mutate source arrays");
+
+// Plugin classification drives the Plugins subtab strip: a plugin is a BAR plugin
+// when its manifest hosts include topbarGlyph, otherwise it is a DESKTOP plugin.
+const plugins = [
+    { id: "vpn", category: "plugins", name: "VPN", metadata: { hosts: ["topbarGlyph"] } },
+    { id: "clockbar", category: "plugins", name: "Clock", metadata: { hosts: ["topbarGlyph", "desktopWidget"] } },
+    { id: "widget", category: "plugins", name: "Widget", metadata: { hosts: ["desktopWidget"] } },
+    { id: "popout", category: "plugins", name: "Popout", metadata: { hosts: ["framePopout"] } },
+    { id: "bare", category: "plugins", name: "Bare" }
+];
+eq(Store.pluginKind(plugins[0]), "bar", "topbarGlyph host is a bar plugin");
+eq(Store.pluginKind(plugins[1]), "bar", "any topbarGlyph host is a bar plugin");
+eq(Store.pluginKind(plugins[2]), "desktop", "desktopWidget host is a desktop plugin");
+eq(Store.pluginKind(plugins[3]), "desktop", "framePopout host is a desktop plugin");
+eq(Store.pluginKind(plugins[4]), "desktop", "no hosts falls back to desktop");
+eq(Store.pluginKind(undefined), "desktop", "missing item is a desktop plugin");
+eq(
+    Store.filter(plugins, { category: "plugins", pluginKind: "bar" }).map(item => item.id),
+    ["vpn", "clockbar"],
+    "BAR subtab keeps only topbarGlyph plugins"
+);
+eq(
+    Store.filter(plugins, { category: "plugins", pluginKind: "desktop" }).map(item => item.id),
+    ["widget", "popout", "bare"],
+    "DESKTOP subtab keeps everything else"
+);
+eq(
+    Store.collection(plugins, { view: "discover", categoryID: "plugins", pluginKind: "bar" }).map(Store.itemKey),
+    ["plugins:vpn", "plugins:clockbar"],
+    "plugins BAR collection filters through the pluginKind option"
+);
+eq(
+    Store.collection(plugins, { view: "discover", categoryID: "plugins" }).map(item => item.id),
+    ["vpn", "clockbar", "widget", "popout", "bare"],
+    "plugins ALL collection keeps every plugin in source order"
+);
 
 console.log("RYOSTORE-STORE-HELPERS-PASS");

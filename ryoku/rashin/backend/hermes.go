@@ -16,6 +16,8 @@ type HermesInfo struct {
 	Version    string `json:"version"`
 	Configured bool   `json:"configured"`
 	Wired      bool   `json:"wired"`
+	// SkillWired is true when ~/.hermes/skills/ryoku links the shipped skill.
+	SkillWired bool   `json:"skillWired"`
 	Provider   string `json:"provider,omitempty"`
 	Model      string `json:"model,omitempty"`
 }
@@ -57,6 +59,7 @@ func HermesStatus() HermesInfo {
 	}
 	info.Configured = hermesOnboarded()
 	info.Wired = fileHasBlock(hermesMemory())
+	info.SkillWired = isOurSkillLink(filepath.Join(home(), ".hermes", "skills", "ryoku"))
 	info.Provider, info.Model, _ = hermesModel()
 	if saved := savedSessionModel(); saved != "" {
 		info.Model = saved
@@ -117,6 +120,13 @@ func hermesModel() (provider, model string, ok bool) {
 // The active session model is remembered here so a pick in any chat surface
 // survives daemon restarts and reads back consistently in status. The value is
 // the ACP model id (provider:model); empty until the first session or pick.
+//
+// The pick is only valid for the hermes config it was made under: a user who
+// re-runs `hermes setup` (say, onto NVIDIA NIM) has chosen again, and re-applying
+// the old pick would send the old model name at the new endpoint (issue 145,
+// "HTTP 404" on every dashboard turn while the terminal works). So the file
+// carries the config's model line as a second line, and a pick whose line no
+// longer matches is forgotten.
 func modelStatePath() string {
 	base := os.Getenv("RYOKU_STATE_PATH")
 	if base == "" {
@@ -129,12 +139,26 @@ func modelStatePath() string {
 	return filepath.Join(base, "rashin-model")
 }
 
+// configModelKey is the fingerprint a remembered model pick is tied to: the
+// active chat backend plus hermes's configured provider/model. Keying on the
+// backend keeps each agent's model separate, so switching to omp never shows
+// (or applies) a model the user picked for hermes.
+func configModelKey() string {
+	provider, model, _ := hermesModel()
+	backend, _ := resolveChatBackend(LoadConfig())
+	return backend.ID + "|" + provider + "/" + model
+}
+
 func savedSessionModel() string {
 	b, err := os.ReadFile(modelStatePath())
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(b))
+	id, key, _ := strings.Cut(strings.TrimSpace(string(b)), "\n")
+	if strings.TrimSpace(key) != configModelKey() {
+		return ""
+	}
+	return strings.TrimSpace(id)
 }
 
 func saveSessionModel(id string) {
@@ -144,7 +168,7 @@ func saveSessionModel(id string) {
 	}
 	p := modelStatePath()
 	_ = os.MkdirAll(filepath.Dir(p), 0o755)
-	_ = os.WriteFile(p, []byte(id+"\n"), 0o644)
+	_ = os.WriteFile(p, []byte(id+"\n"+configModelKey()+"\n"), 0o644)
 }
 
 func hermesVersion(bin string) string {

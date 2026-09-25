@@ -34,11 +34,15 @@ Singleton {
 
     // Resolve one Material role through the layer chain: a named scheme wins,
     // then the live wallpaper palette while Match wallpaper is on, then the base.
+    // Mid-cross-fade the wallpaper layer is a mix of the two palettes.
     function role(key, base) {
         if (namedScheme && usable(namedScheme[key]))
             return namedScheme[key];
-        if (matchWallpaper && usable(wall[key]))
-            return wall[key];
+        if (matchWallpaper && usable(wall[key])) {
+            if (blend >= 0.999 || !usable(wallPrev[key]))
+                return wall[key];
+            return t.mixRole(Qt.color(wallPrev[key]), Qt.color(wall[key]), blend);
+        }
         return base;
     }
 
@@ -64,8 +68,11 @@ Singleton {
     // light surface too (never the outline roles, which wash out on white).
     readonly property color ink: role("onSurface", defaultInk)
     readonly property color inkDim: role("onSurfaceVariant", defaultInkDim)
-    readonly property color inkMuted: Qt.rgba(inkDim.r, inkDim.g, inkDim.b, 0.78)
-    readonly property color inkFaint: Qt.rgba(inkDim.r, inkDim.g, inkDim.b, 0.55)
+    // 0.88/0.68 over pure-black paper keep both tiers above the 4.5:1 legibility
+    // floor the doc guarantees; the old 0.78/0.55 dipped under it once the
+    // wallpaper dimmed onSurfaceVariant, which read as "options hard to see".
+    readonly property color inkMuted: Qt.rgba(inkDim.r, inkDim.g, inkDim.b, 0.88)
+    readonly property color inkFaint: Qt.rgba(inkDim.r, inkDim.g, inkDim.b, 0.68)
 
     // ── bone stock (inverted): the Material inverse-surface pair, so the light
     // plate and its dark ink keep contrast on a light OR dark theme ───────────
@@ -96,11 +103,17 @@ Singleton {
 
     // ── type ─────────────────────────────────────────────────────────────
     readonly property string display: "Fraunces"
-    readonly property string ui: "Space Grotesk"
-    readonly property string mono: "SpaceMono Nerd Font"
+    property string ui: "Space Grotesk"
+    property string mono: "SpaceMono Nerd Font"
     readonly property string jp: "Noto Sans CJK JP"
 
-    readonly property int fTitle: px(46)    // page title, Fraunces
+    // ── chrome ───────────────────────────────────────────────────────────
+    // One setting voice: the quiet, function-first one. The poster layer that
+    // once dressed the sheet (register crosshairs, film grain, chapter plates,
+    // the oversized display title) is gone, and with it the `hubDecor` switch
+    // that used to trade it on, so a page reads as a printed instrument sheet
+    // and the ornament question does not exist.
+    readonly property int fTitle: px(32)    // page title, Fraunces
     readonly property int fHero: px(34)     // a headline readout
     readonly property int fValue: px(26)    // a cell's value
     readonly property int fRow: px(15)      // a row name
@@ -127,6 +140,13 @@ Singleton {
     readonly property int rowH: px(48)
     readonly property int cellH: px(104)
     readonly property int railW: px(268)
+    // The widest a stack of settings rows reads at before a label and its control
+    // stop being one thing. A page may cap its own column here and centre it.
+    readonly property int contentMax: px(1000)
+    // The widest a card grows when a page has few of them: the grid narrows its
+    // column count and lets the cards take the space, rather than leaving a
+    // window-wide gap beside a lone card.
+    readonly property int cardWide: px(760)
     readonly property int ctlH: px(26)
 
     // ── motion ───────────────────────────────────────────────────────────
@@ -141,11 +161,24 @@ Singleton {
     // their own sizes by uiScaleFor(screen) so one monitor's chrome shrinks
     // without touching the compositor scale that apps depend on.
     property var uiScales: ({})
+    property var barVisibility: ({})
+    property var widgetVisibility: ({})
+
     function uiScaleFor(name) {
         var v = (name && uiScales) ? uiScales[name] : undefined;
         if (typeof v !== "number" || !(v > 0))
             return 1;
         return Math.max(0.5, Math.min(2, v));
+    }
+
+    function barEnabledFor(name) {
+        var v = (name && barVisibility) ? barVisibility[name] : undefined;
+        return v !== false;
+    }
+
+    function widgetsEnabledFor(name) {
+        var v = (name && widgetVisibility) ? widgetVisibility[name] : undefined;
+        return v !== false;
     }
 
     // A single-window process (the Hub) sets uiScale to scale its whole UI at
@@ -184,22 +217,67 @@ Singleton {
     readonly property var curveSlowEffects: [0.34, 0.88, 0.34, 1, 1, 1]
 
     // ── grain ────────────────────────────────────────────────────────────
+    // Art only: the film tooth rides a recording thumbnail or a launcher
+    // preview, never the paper a setting is read on (see Doc/ui-ux.md).
     readonly property real grainOpacity: 0.10
+
+    // ── palette cross-fade ───────────────────────────────────────────────────
+    // A new palette used to land in one frame while the wallpaper it came from was
+    // still wiping in. `blend` walks the roles across instead, so the ink arrives
+    // with the picture. Every role is a mix while it runs, so every binding that
+    // reads one re-evaluates per frame: bounded to the change, skipped when motion
+    // is reduced.
+    property var wallPrev: ({})
+    property real blend: 1
+    // an explicit animation, not a Behavior: assigning 0 then 1 in one block never
+    // leaves the property at 0, so a Behavior would animate 1 to 1 and show nothing
+    NumberAnimation {
+        id: blendWalk
+        target: t
+        property: "blend"
+        from: 0
+        to: 1
+        duration: t.durSlowEffects
+        easing.type: Easing.Bezier
+        easing.bezierCurve: t.curveDefaultEffects
+    }
+
+    function mixRole(from, to, at) {
+        return Qt.rgba(from.r + (to.r - from.r) * at,
+                       from.g + (to.g - from.g) * at,
+                       from.b + (to.b - from.b) * at,
+                       from.a + (to.a - from.a) * at);
+    }
 
     // ── daemon palette readers ───────────────────────────────────────────────
     function refreshWall() {
+        var next = ({});
         try {
             const txt = paletteFile.text();
-            t.wall = txt && txt.length ? (JSON.parse(txt) || {}) : {};
+            next = txt && txt.length ? (JSON.parse(txt) || {}) : {};
         } catch (e) {
-            t.wall = {};
+            next = {};
         }
+        // the session's first palette has nothing to come from: land it solid
+        const first = Object.keys(t.wall).length === 0;
+        t.wallPrev = t.wall;
+        t.wall = next;
+        if (first || t.reduceMotion) {
+            blendWalk.stop();
+            t.blend = 1;
+            return;
+        }
+        blendWalk.restart();
     }
     function refreshNamed() {
         var pal = null;
         var scale = 1.0;
         var reduce = false;
         var scales = ({});
+        var bars = ({});
+        var widgets = ({});
+        var monoFont = "SpaceMono Nerd Font";
+        var uiFont = "Space Grotesk";
         try {
             const txt = shellFile.text();
             if (txt) {
@@ -212,9 +290,17 @@ Singleton {
                         scale = m.scale;
                     reduce = m.reduce === true;
                 }
-                const u = o && o.displays && o.displays.ui_scale;
+                const displays = o && o.displays;
+                const u = displays && displays.ui_scale;
                 if (u && typeof u === "object" && u !== null)
                     scales = u;
+                const b = displays && displays.bar;
+                if (b && typeof b === "object" && b !== null)
+                    bars = b;
+                const w = displays && displays.widgets;
+                if (w && typeof w === "object" && w !== null)
+                    widgets = w;
+                if (typeof o.fontFamily === "string" && o.fontFamily.length) { uiFont = o.fontFamily; monoFont = o.fontFamily; }
             }
         } catch (e) {
             pal = null;
@@ -223,6 +309,10 @@ Singleton {
         t.motionScale = scale;
         t.reduceMotion = reduce;
         t.uiScales = scales;
+        t.barVisibility = bars;
+        t.widgetVisibility = widgets;
+        t.ui = uiFont;
+        t.mono = monoFont;
     }
     function refreshMatch() {
         try {

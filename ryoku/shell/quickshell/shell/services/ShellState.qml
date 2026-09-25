@@ -2,7 +2,7 @@ pragma Singleton
 pragma ComponentBehavior: Bound
 
 import Quickshell
-import Quickshell.Hyprland
+import Ryoku.Ui.Singletons
 import "lib/screens.js" as Screens
 
 // Shared per-monitor open/close state for every shell surface: the single source
@@ -31,11 +31,10 @@ Singleton {
         return Screens.sliceForScreen(states.instances, screen);
     }
 
-    // State for the monitor Hyprland currently focuses; falls back to the first
-    // screen so a caller before focus is known still gets a live target.
+    // State for the focused output; falls back to the first screen so a caller
+    // before focus is known still gets a live target.
     function forActive() {
-        const mon = Hyprland.focusedMonitor;
-        const slice = Screens.sliceForName(states.instances, mon && mon.name ? mon.name : "");
+        const slice = Screens.sliceForName(states.instances, Wm.focusedOutput);
         if (slice)
             return slice;
         const list = states.instances;
@@ -50,9 +49,9 @@ Singleton {
     property string sessionAction: ""            // "" | "logout" | "reboot" | "shutdown"
     property string sessionActionMonitor: ""
     readonly property var sessionCopy: ({
-        "logout":   { message: "Are you sure you want to log out?",  positive: "Logout" },
-        "reboot":   { message: "Are you sure you want to reboot?",   positive: "Reboot" },
-        "shutdown": { message: "Are you sure you want to shut down?", positive: "Shutdown" }
+        "logout":   { message: I18n.tr("Are you sure you want to log out?"),  positive: I18n.tr("Logout") },
+        "reboot":   { message: I18n.tr("Are you sure you want to reboot?"),   positive: I18n.tr("Reboot") },
+        "shutdown": { message: I18n.tr("Are you sure you want to shut down?"), positive: I18n.tr("Shutdown") }
     })
     readonly property string sessionMessage: root.sessionAction !== "" ? root.sessionCopy[root.sessionAction].message : ""
     readonly property string sessionPositive: root.sessionAction !== "" ? root.sessionCopy[root.sessionAction].positive : ""
@@ -83,8 +82,7 @@ Singleton {
     // call this so a keybind lands on the active screen, matching the old
     // `ryoku-shell menu <id>` which routed to the daemon's activeMonitor.
     function requestSurfaceActive(id, context) {
-        const m = Hyprland.focusedMonitor;
-        root.surfaceRequested(id, m && m.name ? m.name : "", context);
+        root.surfaceRequested(id, Wm.focusedOutput, context);
     }
 
     // Keyboard-return bounce bridge. A dismissed keyboard surface (the per-monitor
@@ -94,6 +92,7 @@ Singleton {
     // window; shell.qml owns the pulse, Frame.qml calls restoreFocus().
     signal focusRestoreRequested()
     function restoreFocus() { root.focusRestoreRequested(); }
+
 
     Variants {
         id: states
@@ -107,7 +106,7 @@ Singleton {
             // becomes an in-process flip:
             property bool launcherOpen: false           // launcher
             property bool overviewOpen: false           // overview (Super+Tab expo)
-            property bool wallpaperSwitcherOpen: false  // wallpaper-switcher
+            property bool clipboardOpen: false          // clipboard overlay (Super+V)
 
             // The frame bar's master reveal for this monitor. Resting policy is
             // revealed: each edge then follows its Config reveal flag, and the

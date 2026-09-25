@@ -15,7 +15,9 @@ import QtQuick
 import Quickshell
 import Quickshell.Wayland
 import QtMultimedia
+import Quickshell.Io
 import "./shim"
+import Ryoku.Ui.Singletons
 
 ShellRoot {
     id: shellRoot
@@ -53,18 +55,13 @@ ShellRoot {
         function onLoginSucceeded() {
             shellRoot.authenticated = true
 
-            // Hyprland session lock fix: allow the compositor to restore
-            // the previous layout after the lock surface is destroyed.
-            if (Quickshell.env("XDG_CURRENT_DESKTOP") === "Hyprland" || Quickshell.env("HYPRLAND_INSTANCE_SIGNATURE") !== "") {
-                Quickshell.execDetached(["hyprctl", "keyword", "misc:allow_session_lock_restore", "1"]);
-            }
             Quickshell.execDetached(["loginctl", "unlock-session"]);
 
             // Dynamic exit delay: clockwork themes with windup animation
             // need a longer delay so the reveal animation completes.
             let delay = 100;
             if (activeTheme.includes("clockwork") && sddmShim.config.enableWindup === "true") {
-                delay = 500;
+                delay = 720;
             }
             quitTimer.interval = delay;
             quitTimer.start()
@@ -96,6 +93,65 @@ ShellRoot {
         }
     }
 
+    // ── fingerprint overlay (universal, above any skin) ─────────────────────
+    // One reader rides above whatever theme the Loader above pulled in, in BOTH
+    // surfaces below, so every skin shows the identical scan/unlock with zero
+    // per-theme code. Bound only to the shim's fingerprint state -- it draws,
+    // it never authenticates.
+    property color fpAccent: "#ffb59b"
+    FileView {
+        id: paletteFile
+        path: (Quickshell.env("HOME") || "") + "/.cache/ryoku/colors.json"
+        blockLoading: true
+        watchChanges: true
+        printErrors: false
+        onFileChanged: reload()
+        onLoaded: {
+            try {
+                const o = JSON.parse(paletteFile.text() || "{}");
+                if (o && typeof o.primary === "string" && o.primary.length)
+                    shellRoot.fpAccent = o.primary;
+            } catch (e) {}
+        }
+    }
+    Component {
+        id: fpOverlayComponent
+        Item {
+            id: ov
+            anchors.fill: parent
+            z: 10000
+            readonly property var s: sddmShim.sddm
+            readonly property string ph: !s.fingerprintReady ? "off"
+                : (s.fingerprintState === "idle" ? "ready" : s.fingerprintState)
+            readonly property bool unavailable: s.fingerprintState === "unavailable"
+
+            // When the sensor is parked (claim held, #243) the scan glyph is
+            // hidden and the message is neutral guidance, not the red "not
+            // recognized" a real misread earns: the user did nothing wrong.
+            FingerprintScan {
+                id: fpScan
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: parent.height * 0.60
+                sizePx: Math.round(Math.min(parent.width, parent.height) * 0.10)
+                accent: shellRoot.fpAccent
+                phase: ov.unavailable ? "off" : ov.ph
+            }
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.top: fpScan.bottom
+                anchors.topMargin: Math.round(fpScan.sizePx * 0.18)
+                font.pixelSize: Math.round(fpScan.sizePx * 0.18)
+                color: ov.unavailable ? shellRoot.fpAccent : (ov.ph === "fail" ? "#e0806f" : shellRoot.fpAccent)
+                opacity: (ov.unavailable || ov.ph === "scanning" || ov.ph === "success" || ov.ph === "fail") ? 0.92 : 0
+                Behavior on opacity { NumberAnimation { duration: 180 } }
+                text: ov.unavailable ? I18n.tr("Fingerprint unavailable — use your password")
+                    : ov.ph === "success" ? I18n.tr("Unlocked")
+                    : (ov.ph === "fail" ? I18n.tr("Not recognized") : I18n.tr("Reading\u2026"))
+                visible: opacity > 0.01
+            }
+        }
+    }
+
     // ── Wayland session lock ────────────────────────────────────────────────
     // Uses Quickshell's WlSessionLock to cover all outputs with a secure
     // surface. The lock is confirmed (secure=true) once the compositor
@@ -117,6 +173,8 @@ ShellRoot {
                     if (lock.secure) {
                         Quickshell.execDetached(["sh", "-c", "umask 077; : > \"${XDG_RUNTIME_DIR:-/tmp}/qylock.locked\""])
                         sddmShim.armWhenReady = true
+                        // surface is up: arm the lock-in reveal (onCompleted too early)
+                        sddmShim.sddm.surfaceRevealed()
                     } else {
                         Quickshell.execDetached(["sh", "-c", "rm -f \"${XDG_RUNTIME_DIR:-/tmp}/qylock.locked\""])
                         sddmShim.armWhenReady = false
@@ -142,6 +200,10 @@ ShellRoot {
                         Loader {
                             anchors.fill: parent
                             sourceComponent: themeComponent
+                        }
+                        Loader {
+                            anchors.fill: parent
+                            sourceComponent: fpOverlayComponent
                         }
                     }
                 }
@@ -174,6 +236,10 @@ ShellRoot {
                     Loader {
                         anchors.fill: parent
                         sourceComponent: themeComponent
+                    }
+                    Loader {
+                        anchors.fill: parent
+                        sourceComponent: fpOverlayComponent
                     }
                 }
             }

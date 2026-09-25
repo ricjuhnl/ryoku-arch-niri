@@ -5,6 +5,8 @@
 /installation/tests/cache/
 /installation/tui/ryoku-tui
 /ryoku/shell/ipc/ryoku-shell
+/ryoku/wm/hyprland/ryoku-wm-hyprland
+/ryoku/wm/niri/ryoku-wm-niri
 /ryoku/hub/backend/ryoku-hub
 /ryoku/rashin/backend/ryoku-rashin
 /ryoku/cli/ryoku
@@ -51,3 +53,19 @@ __pycache__/
 # Developer scratch: local reports and working notes, never part of Ryoku.
 /local/
 .superpowers/
+# prowl-agent: derived state
+!.prowl/
+.prowl/*
+!.prowl/config.toml
+!.prowl/rules.toml
+!.prowl/knowledge/
+!.prowl/knowledge/**
+!.prowl/proposals/
+!.prowl/proposals/**
+.prowl/index.db*
+.prowl/cache/
+.prowl/logs/
+.prowl/editor/
+.prowl/setup-applies.json
+.prowl-setup.lock
+# /prowl-agent: derived state

@@ -1,21 +1,23 @@
 // The system-action catalog: each entry is a command the launcher can fire,
-// wired to a real Ryoku helper (ryoku-shell, ryoku-cmd-*) or hyprctl. Data only,
+// wired to a real Ryoku helper (ryoku-shell, ryoku-cmd-*). Data only,
 // so the set is validated in a node test and the provider stays a thin mapper.
 // `exec` is an argv array run with execDetached. Categories group the action-mode
-// tabs (System / Appearance / Tools / Media / Settings).
+// tabs (System / Appearance / Tools / Media / Settings). An optional `caps` names
+// a window-manager capability the action needs; the provider hides the entry on a
+// compositor that lacks it (a tool that is not even installed there).
 
 var CATALOG = [
     { id: "lock-screen",      name: "Lock Screen",        category: "System",     icon: "lock",        exec: ["ryoku-shell", "lock"] },
-    { id: "open-clipboard",   name: "Clipboard History",  category: "System",     icon: "clipboard",   exec: ["ryoku-shell", "clipboard"] },
-    { id: "open-sysinfo",     name: "System Info",        category: "System",     icon: "info",        exec: ["ryoku-shell", "sysinfo"] },
-    { id: "open-toolkit",     name: "Control Deck",       category: "System",     icon: "grid",        exec: ["ryoku-shell", "toolkit"] },
+    { id: "open-clipboard",   name: "Clipboard History",  category: "System",     icon: "clipboard",   exec: ["ryoku-shell", "menu", "quick-settings#clipboard"] },
+    { id: "open-sysinfo",     name: "System Info",        category: "System",     icon: "info",        exec: ["ryoku-shell", "menu", "quick-settings"] },
+    { id: "open-toolkit",     name: "Control Deck",       category: "System",     icon: "grid",        exec: ["ryoku-shell", "menu", "quick-settings"] },
     { id: "toggle-caffeine",  name: "Keep Awake",         category: "System",     icon: "coffee",      exec: ["ryoku-cmd-caffeine"] },
-    { id: "toggle-game-mode", name: "Game Mode",          category: "System",     icon: "gamepad",     exec: ["ryoku-cmd-game-mode"] },
-    { id: "mirror-displays",  name: "Mirror Displays",    category: "System",     icon: "monitor",     exec: ["ryoku-monitor", "toggle"] },
+    { id: "toggle-game-mode", name: "Game Mode",          category: "System",     icon: "gamepad",     exec: ["ryoku-cmd-game-mode"], caps: "liveConfigEval" },
+    { id: "mirror-displays",  name: "Mirror Displays",    category: "System",     icon: "monitor",     exec: ["ryoku-monitor", "toggle"], caps: "outputMirror" },
 
-    { id: "next-wallpaper",   name: "Next Wallpaper",     category: "Appearance", icon: "image",       exec: ["ryoku-shell", "wallpaper"] },
-    { id: "pick-wallpaper",   name: "Wallpaper Picker",   category: "Appearance", icon: "image-multi", exec: ["ryoku-shell", "wallpaper-switcher"] },
-    { id: "toggle-nightlight",name: "Night Light",        category: "Appearance", icon: "moon",        exec: ["ryoku-cmd-nightlight"] },
+    { id: "next-wallpaper",   name: "Next Wallpaper",     category: "Appearance", icon: "image",       exec: ["ryogami", "wallpaper", "next"] },
+    { id: "pick-wallpaper",   name: "Wallpaper Picker",   category: "Appearance", icon: "image-multi", exec: ["ryogami", "wallpaper", "ui"] },
+    { id: "toggle-nightlight",name: "Night Light",        category: "Appearance", icon: "moon",        exec: ["ryoku-cmd-nightlight"], caps: "nightLight" },
 
     { id: "screenshot",       name: "Screenshot",         category: "Tools",      icon: "camera",      exec: ["sh", "-c", "flock -n -o /tmp/ryoshot.lock qs -c ryoshot"] },
     { id: "screen-record",    name: "Screen Record",      category: "Tools",      icon: "video",       exec: ["ryoku-cmd-screenrecord"] },
@@ -31,7 +33,7 @@ var CATALOG = [
     { id: "media-visualizer", name: "Audio Visualizer",   category: "Media",      icon: "wave",        exec: ["ryoku-shell", "visualizer-overlay"] },
 
     { id: "open-settings",    name: "Ryoku Settings",     category: "Settings",   icon: "settings",    exec: ["sh", "-c", "flock -n -o /tmp/ryoku-hub.lock qs -c hub"] },
-    { id: "keybind-legend",   name: "Keybind Reference",  category: "Settings",   icon: "keyboard",    exec: ["sh", "-c", "ryoku-hub config set section keybinds; flock -n -o /tmp/ryoku-hub.lock qs -c hub"] },
+    { id: "keybind-legend",   name: "Keybind Reference",  category: "Settings",   icon: "keyboard",    exec: ["sh", "-c", "flock -n -o /tmp/ryoku-keys.lock qs -c keys"] },
     { id: "reload-shell",     name: "Reload Shell",       category: "Settings",   icon: "refresh",     exec: ["ryoku-shell", "reload"] }
 ];
 

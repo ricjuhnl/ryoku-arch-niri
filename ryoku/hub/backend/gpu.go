@@ -8,7 +8,7 @@ import "fmt"
 
 func runGpu(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("gpu needs a subcommand: caps|mode")
+		return fmt.Errorf("gpu needs a subcommand: caps|mode|mux|apply|tune|hook|vm")
 	}
 	switch args[0] {
 	case "caps":
@@ -19,12 +19,16 @@ func runGpu(args []string) error {
 		return printJSON(report)
 	case "mode":
 		return runGpuMode(args[1:])
+	case "mux":
+		return runGpuMux(args[1:])
 	case "apply":
 		return runGpuApply(args[1:])
 	case "tune":
 		return runGpuTune(args[1:])
 	case "hook":
 		return runGpuHook(args[1:])
+	case "vm":
+		return runGpuVM(args[1:])
 	default:
 		return fmt.Errorf("unknown gpu subcommand: %s", args[0])
 	}

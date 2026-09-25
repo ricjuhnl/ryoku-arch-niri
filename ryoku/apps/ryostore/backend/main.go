@@ -3,7 +3,7 @@
 // activating them. The Quickshell front end shells out to these subcommands.
 //
 //	ryostore catalog [--refresh] [--category <id>]   normalized catalogue, JSON
-//	ryostore install <category> <id>                 install-only, no activation
+//	ryostore install <category> <id> [--from <dir>]  install-only, no activation
 //	ryostore remove <category> <id>                  receipt-owned removal
 //
 // A full catalog answers from a disk snapshot so every launch after the first is
@@ -102,8 +102,11 @@ func runCatalog(w io.Writer, provs []Provider, args []string) error {
 		// transient source failure; serving it again pins the store to "offline"
 		// forever, so fall through to a live rebuild that self-heals once the
 		// source is reachable. A rebuild that still fails falls back to the same
-		// cache, so this never does worse than serving the snapshot.
-		if data, err := os.ReadFile(snapshot); err == nil && len(data) > 0 && !snapshotOffline(data) {
+		// cache, so this never does worse than serving the snapshot. A snapshot
+		// built under another window manager is stale the same way: it answers
+		// which products run here, and after a compositor switch that answer is
+		// the old one.
+		if data, err := os.ReadFile(snapshot); err == nil && len(data) > 0 && !snapshotOffline(data) && !snapshotForeignWindowManager(data) {
 			_, err := w.Write(data)
 			return err
 		}
@@ -140,6 +143,25 @@ func snapshotOffline(data []byte) bool {
 		Offline bool `json:"offline"`
 	}
 	return json.Unmarshal(data, &s) == nil && s.Offline
+}
+
+// snapshotForeignWindowManager reports whether a cached catalogue was built
+// against a window manager other than the running one. Its per-item availability
+// answers belong to the desktop it was built on, so after a compositor switch the
+// snapshot is rebuilt live instead of served. An unrecorded or undetectable
+// manager is never foreign: nothing is rebuilt on a guess.
+func snapshotForeignWindowManager(data []byte) bool {
+	var s struct {
+		WindowManager string `json:"windowManager"`
+	}
+	if json.Unmarshal(data, &s) != nil {
+		return false
+	}
+	running := runningWindowManager()
+	if s.WindowManager == "" || running == "" {
+		return false
+	}
+	return !strings.EqualFold(s.WindowManager, running)
 }
 
 // runWarm is the detached background asset populator the store launches after a
@@ -196,6 +218,7 @@ func runCheck(w io.Writer, provs []Provider) error {
 
 func runInstall(provs []Provider, args []string) error {
 	dither := false
+	from := ""
 	var only []string
 	rest := make([]string, 0, len(args))
 	i := 0
@@ -205,6 +228,11 @@ func runInstall(provs []Provider, args []string) error {
 		switch a {
 		case "--dither":
 			dither = true
+		case "--from":
+			if i < len(args) {
+				from = args[i]
+				i++
+			}
 		case "--only":
 			if i < len(args) {
 				for _, n := range strings.Split(args[i], ",") {
@@ -226,6 +254,13 @@ func runInstall(provs []Provider, args []string) error {
 	if !ok {
 		return fmt.Errorf("unknown category %q", category)
 	}
+	if from != "" {
+		li, ok := p.(localInstaller)
+		if !ok {
+			return fmt.Errorf("category %q does not support --from", category)
+		}
+		return li.InstallFrom(context.Background(), id, from)
+	}
 	if len(only) > 0 {
 		if ci, ok := p.(componentInstaller); ok {
 			return ci.InstallComponents(context.Background(), id, only)
@@ -237,6 +272,12 @@ func runInstall(provs []Provider, args []string) error {
 		}
 	}
 	return p.Install(context.Background(), id)
+}
+
+// localInstaller is a provider that can install a product from a local
+// directory (the plugins provider, for `ryoku plugin add`).
+type localInstaller interface {
+	InstallFrom(ctx context.Context, id, dir string) error
 }
 
 // variantInstaller is a provider that offers install-time variants (the decors

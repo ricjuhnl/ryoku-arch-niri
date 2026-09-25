@@ -43,6 +43,19 @@ Singleton {
         return (typeof v === "number" && v > 0 && v <= 8) ? v : 1.0;
     }
 
+    // The two persisted user preferences the Super+Escape quick settings flips.
+    // Perf is the shell's only reader of performance.json, so its write lives
+    // here too rather than a second copy in a route: setting a key rewrites the
+    // file (atomic, watched) and every derived switch above re-folds from it.
+    // lowPower already exposes adapter.lowPowerMode above; this is its counterpart.
+    readonly property bool reduceMotionPref: adapter.reduceMotion
+    function setLowPower(on) { adapter.lowPowerMode = on; file.writeAdapter(); }
+    function setReduceMotion(on) { adapter.reduceMotion = on; file.writeAdapter(); }
+    // The bar's silent gap drift, flipped from the bar control centre's Gap
+    // animation card as well as the Performance page. Same write path as above.
+    readonly property bool ambientBarMotionPref: adapter.ambientBarMotion
+    function setAmbientBarMotion(on) { adapter.ambientBarMotion = on; file.writeAdapter(); }
+
     // Power profile -> tier. With powerProfileEffects off, or no power-profiles-daemon
     // (a desktop reports no profiles), the tier is Balanced so nothing is forced.
     readonly property int tierSaver: 0
@@ -78,52 +91,54 @@ Singleton {
     // all". The first is what shipped, and it cost two cava processes plus a
     // permanently damaged surface keeping the compositor awake.
     //
-    // Silence is now the gate, unconditionally: there is no sensible reason to
-    // spectrum-analyse an idle sink, so the old opt-in keys no longer take part.
-    // The hard tiers still win outright, so Saver, lowPowerMode and Game Mode keep
-    // these off even mid-track.
-    readonly property bool audioIdle: !Media.playing
+    // "Sounding" is real audio reaching the sink, not just a media player's
+    // reported state. Keying idle off MPRIS alone froze the analysers whenever
+    // sound had no MPRIS interface -- games, browser tabs, system sounds -- or
+    // when the player under-reported between tracks (#61). The ground truth is an
+    // active PipeWire playback stream (Audio.streams, itself settled); Media.playing
+    // stays as a fast-path so a player that flips to playing before its stream is
+    // listed still counts instantly. The hard tiers still win outright below, so
+    // Saver, lowPowerMode and Game Mode keep the analysers off even mid-track.
+    //
+    // Bridge brief gaps: a stream tears down and rebuilds for a beat between
+    // tracks, so dropping cava on every blip stuttered the visualiser and pill.
+    // The idle->active edge is instant; active->idle is debounced by audioGrace.
+    // This is imperative on purpose: `property bool audioIdle: !sounding` would be
+    // a live binding that flips the instant the signal changes, defeating the
+    // grace (the same binding-vs-imperative trap as the analysers' `running`).
+    // onSoundingChanged + audioGrace are the sole controllers; the initial state
+    // is seeded once.
+    readonly property bool sounding: Media.playing || Audio.streams.length > 0
+    property bool audioIdle: true
+    Component.onCompleted: root.audioIdle = !root.sounding
+    onSoundingChanged: {
+        if (root.sounding) { audioGrace.stop(); root.audioIdle = false; }
+        else audioGrace.restart();
+    }
+    Timer { id: audioGrace; interval: 4000; onTriggered: root.audioIdle = true }
     readonly property bool visualizerFrozen: lowPower || saver || gaming || audioIdle
     readonly property bool pillFrozen:       lowPower || saver || gaming || audioIdle
 
-    // Ambient motion with nothing playing: the bar's stream drifting on a passive
-    // sine when the desktop is silent. Allowed on Balanced and Performance,
-    // refused by the hard tiers, so the power profile decides it the way it
-    // decides the rest of the eye-candy.
+    // Ambient motion: the bar's stream drifting on a passive sine while the desktop
+    // is SILENT (with audio playing it reacts regardless -- that is streamLive's
+    // audioLive term, not this). This passive drift is the shell's one
+    // continuously-repainting idle surface, and it is why a default box idled far
+    // above the shells in #60: caelestia and end-4 only animate the bar while a
+    // player isPlaying, and a Waybar box has no GPU canvas at all.
     //
-    // Separate from the two freeze flags above on purpose. There is never a reason
-    // to spectrum-analyse silence, so cava stops either way; drifting a few pixels
-    // is a different question, and on a machine the user has put in Performance
-    // the answer is yes.
+    // By default the silent drift is Performance-only: Balanced and Saver leave the
+    // bar still when nothing plays, idling quiet like those shells. A user who
+    // wants it anyway opts in with ambientBarMotion (the Performance page's "Bar
+    // drifts when silent"), which runs the drift on Balanced and Performance alike.
+    // lowPowerMode, Game Mode and Power Saver still force it off, and reduceMotion
+    // is enforced by the consumer (streamLive gates on !reduceMotion), so the
+    // motion toggle stops it too.
     //
-    // Two questions, not one. ambientMotion answers "may it move at all"; fullRate
-    // answers "may it move at the full frame rate the animation was designed for".
-    //
-    // The second exists because the gap animations were deliberately throttled: the
-    // pacing picks a slow tier for a field that is only drifting or charging rather
-    // than moving fast, which is why mode 3 (Bolt) settles at 160ms and reads as
-    // steppy no matter which profile is active. That throttle was the right answer
-    // to Bolt costing ~40% of a core, but it is the wrong answer on Performance,
-    // where the user has already said to spend the power and expects the animation
-    // to look the way it was drawn.
-    //
-    // So Performance paces at full rate whenever there is anything to draw, and
-    // every other profile keeps the throttle. A fully dark frame still backs off
-    // everywhere: there is no point painting nothing quickly.
-    //
-    // Priced by instrumenting the paint handler rather than by guessing from the
-    // outside, which is what it took: earlier attempts compared CPU across power
-    // profile switches and measured mostly noise, and none of it was even the
-    // stream, because a bar with barAnim 0 never loads it at all.
-    //
-    // With mode 3 (Bolt) actually running, silent desktop: the paint handler picks
-    // tick=33 on Performance against tick=160 on Balanced, confirmed over hundreds
-    // of frames. The cost of that is real -- shell 42-54% of a core and Hyprland
-    // ~16% -- which is the same bill the throttle was introduced to remove. That is
-    // the deal Performance is asking for, and it is why every other profile keeps
-    // the throttle.
-    readonly property bool ambientMotion: !(lowPower || saver || gaming)
-    readonly property bool fullRate: ambientMotion && tier === tierPerformance
+    // fullRate answers "may the drift run at the full frame rate it was drawn for".
+    // The silent drift runs at full rate; loud playback (paceBusy) is always full
+    // rate on every profile, and a fully dark frame always backs off.
+    readonly property bool ambientMotion: (tier === tierPerformance || adapter.ambientBarMotion) && !(lowPower || gaming || saver)
+    readonly property bool fullRate: ambientMotion
 
     // Graceful cost knobs. Multiply a base poll interval by pollFactor: a second of
     // staleness in a stat readout is invisible, so sampling slows on battery / Saver.
@@ -134,8 +149,10 @@ Singleton {
     readonly property int msaa: (lowPower || saver || gaming) ? 2 : 8
 
     FileView {
+        id: file
         path: (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/ryoku/performance.json"
         watchChanges: true
+        atomicWrites: true
         printErrors: false
         onFileChanged: reload()
         JsonAdapter {
@@ -146,6 +163,7 @@ Singleton {
             property bool disableShadows: false
             property real motionSpeed: 1.0
             property bool powerProfileEffects: true
+            property bool ambientBarMotion: false
         }
     }
 }

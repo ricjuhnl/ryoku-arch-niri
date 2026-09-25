@@ -6,6 +6,7 @@ import Quickshell.Io
 import ".."
 import shell.services
 import "../../../components"
+import Ryoku.Ui.Singletons
 
 // Bluetooth popout: a frame-edge card (the shared PopoutCard skin, so it opens,
 // melts and dismisses exactly like the music card) leading with the hero for the
@@ -118,30 +119,41 @@ Item {
         }
         if (d.blocked)
             d.blocked = false;
-        if (d.paired || d.bonded) {
-            d.connect();
-            return;
-        }
-        root.pair(d);
+        // Paired and unpaired both go through the same script. Device1.Connect
+        // on an existing bond was the dead end in #144/#156: it fails at once
+        // when BlueZ holds keys the device has forgotten, and nothing here ever
+        // cleared that. BtLink.linkCommand pairs if needed, retries, and
+        // rebuilds a bond that will not carry a connection.
+        root.link(d);
     }
-    function pair(d) {
-        if (!d)
+    function link(d) {
+        if (!d || linkProc.running)
             return;
         root.busyAddr = d.address;
         root.errorText = "";
-        pairProc.command = ["sh", "-c",
-            'timeout 30 bluetoothctl pair "$1" && bluetoothctl trust "$1" && timeout 30 bluetoothctl connect "$1"',
-            "sh", d.address];
-        pairProc.running = false;
-        pairProc.running = true;
+        linkProc.command = BtLink.linkCommand(d.address);
+        linkProc.running = false;
+        linkProc.running = true;
     }
     Process {
-        id: pairProc
-        stdout: StdioCollector {}
-        stderr: StdioCollector {}
+        id: linkProc
+        property string collected: ""
+        // stderr as well as stdout: the script redirects bluetoothctl's own
+        // stderr, but a failure in the script itself (no bash, no
+        // bluetoothctl) only ever lands here, and losing it is what left the
+        // user with a generic message and no way to tell why.
+        stdout: StdioCollector { onStreamFinished: linkProc.collected += this.text }
+        stderr: StdioCollector { onStreamFinished: linkProc.collected += this.text }
         onExited: code => {
-            if (code !== 0)
-                root.errorText = qsTr("Pairing failed. Put the device in pairing mode and try again.");
+            if (code !== 0) {
+                const lines = linkProc.collected.trim().split("\n");
+                const msg = lines.length ? lines[lines.length - 1].trim() : "";
+                root.errorText = msg.length ? msg
+                    : I18n.tr("Could not connect. Put the device in pairing mode and try again.");
+            } else {
+                root.errorText = "";
+            }
+            linkProc.collected = "";
             root.busyAddr = "";
         }
     }
@@ -172,9 +184,11 @@ Item {
         Rectangle {
             anchors.fill: parent
             radius: 3 * root.s
-            color: cHover.hovered ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.08) : "transparent"
+            color: cTap.pressed ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.16)
+                : (cHover.hovered ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.08) : "transparent")
             border.width: Theme.borderWidth
             border.color: chip.conn ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.4) : root.line
+            Behavior on color { ColorAnimation { duration: Motion.fast } }
         }
         Row {
             id: chipRow
@@ -216,7 +230,7 @@ Item {
             }
         }
         HoverHandler { id: cHover; cursorShape: Qt.PointingHandCursor }
-        MouseArea { anchors.fill: parent; onClicked: root.tapDevice(chip.dev) }
+        MouseArea { id: cTap; anchors.fill: parent; onClicked: root.tapDevice(chip.dev) }
     }
 
     // --- layout ---------------------------------------------------------------
@@ -235,7 +249,7 @@ Item {
             Text {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                text: qsTr("BLUETOOTH")
+                text: I18n.tr("BLUETOOTH")
                 color: root.inkDim
                 font.family: Theme.mono
                 font.pixelSize: 9 * root.s
@@ -282,7 +296,7 @@ Item {
             Text {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
-                text: root.blocked ? qsTr("Bluetooth is blocked") : qsTr("Bluetooth is off")
+                text: root.blocked ? I18n.tr("Bluetooth is blocked") : I18n.tr("Bluetooth is off")
                 color: root.ink
                 font.family: Theme.fontPrimary
                 font.pixelSize: 12 * root.s
@@ -291,7 +305,7 @@ Item {
             PopoutAction {
                 anchors.horizontalCenter: parent.horizontalCenter
                 s: root.s
-                label: root.blocked ? qsTr("Unblock") : qsTr("Turn on")
+                label: root.blocked ? I18n.tr("Unblock") : I18n.tr("Turn on")
                 onClicked: root.toggleAdapter()
             }
         }
@@ -328,7 +342,7 @@ Item {
         Text {
             width: parent.width
             visible: root.adapterOn && root.focusDev !== null && root.railDevices.length > 0
-            text: root.discovering ? qsTr("OTHER · SCANNING") : qsTr("OTHER DEVICES")
+            text: root.discovering ? I18n.tr("OTHER · SCANNING") : I18n.tr("OTHER DEVICES")
             color: root.inkDim
             font.family: Theme.mono
             font.pixelSize: 8.5 * root.s
@@ -368,7 +382,7 @@ Item {
             Text {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
-                text: root.discovering ? qsTr("Scanning…") : qsTr("No devices yet")
+                text: root.discovering ? I18n.tr("Scanning…") : I18n.tr("No devices yet")
                 color: root.ink
                 font.family: Theme.fontPrimary
                 font.pixelSize: 12 * root.s
@@ -378,7 +392,7 @@ Item {
                 anchors.horizontalCenter: parent.horizontalCenter
                 s: root.s
                 enabled: !root.discovering
-                label: root.discovering ? qsTr("Scanning…") : qsTr("Scan")
+                label: root.discovering ? I18n.tr("Scanning…") : I18n.tr("Scan")
                 onClicked: root.toggleScan()
             }
         }

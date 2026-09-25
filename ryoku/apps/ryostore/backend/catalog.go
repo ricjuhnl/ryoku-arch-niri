@@ -28,6 +28,7 @@ func providers() []Provider {
 		newColorschemeProvider(c),
 		newBarProvider(c),
 		newFastfetchProvider(c),
+		newRyotunesSkinsProvider(c),
 		pluginProvider{cache: c},
 		bundleProvider{cache: c, status: defaultBundleStatus, launch: launchBundleInstall},
 		newDecorProvider(c),
@@ -65,9 +66,10 @@ func BuildCatalog(ctx context.Context, provs []Provider, refresh bool) Catalog {
 	wg.Wait()
 
 	cat := Catalog{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-		Categories:  make([]Category, len(provs)),
-		Items:       []Item{},
+		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
+		WindowManager: runningWindowManager(),
+		Categories:    make([]Category, len(provs)),
+		Items:         []Item{},
 	}
 	anyFailure := false
 	for i, p := range provs {

@@ -55,7 +55,7 @@ Item {
     }
 
     function fv(x) {
-        return (x && x !== "-" && String(x).length > 0) ? x : "unknown";
+        return (x && x !== "-" && String(x).length > 0) ? x : I18n.tr("unknown");
     }
     function editionNo() {
         const basis = pg.machineId + pg.installDate;
@@ -82,7 +82,7 @@ Item {
         if (k === "net")
             return "\u2193 " + pg.fmtRate(LiveStats.netDown);
         if (k === "frac")
-            return "BETA · 18";
+            return Version.editionSummary;
         return "";
     }
     function statSub(k) {
@@ -95,12 +95,12 @@ Item {
         if (k === "net")
             return "\u2191 " + pg.fmtRate(LiveStats.netUp);
         if (k === "frac")
-            return "STABLE";
+            return Version.editionIndex;
         return "";
     }
 
     readonly property var paletteModel: SysInfo.sysPalette.length > 0 ? SysInfo.sysPalette.split(",") : Scheme.ramp
-    readonly property string barcodeText: "RYOKU-" + SysInfo.codename.toUpperCase() + "-" + (pg.installDate.length > 0 ? pg.installDate : "UNKNOWN")
+    readonly property string barcodeText: I18n.tr("RYOKU-") + SysInfo.codename.toUpperCase() + "-" + (pg.installDate.length > 0 ? pg.installDate : I18n.tr("UNKNOWN"))
 
     // customization: read from ProfileStore with the plate's built-in default, so
     // an absent/empty profile.json renders exactly the stock marble plate.
@@ -409,7 +409,7 @@ Item {
         }
 
         // The arc: ascent to ruin -- power, beauty, grace, then the fall.
-        readonly property var words: pg.f("text.epithets", ["POWER", "BEAUTY", "GRACE", "RUIN", "DEMISE", "VOID"])
+        readonly property var words: pg.f("text.epithets", [I18n.tr("POWER"), I18n.tr("BEAUTY"), I18n.tr("GRACE"), I18n.tr("RUIN"), I18n.tr("DEMISE"), I18n.tr("VOID")])
         property int idx: 0
         property real mix: 0
         // The box is wide enough to hold the longest word at full size, so all
@@ -610,7 +610,7 @@ Item {
         Text {
             anchors.centerIn: parent
             rotation: -90
-            text: pg.f("text.marginalia", "RYOKU · " + pg.fv(SysInfo.codename) + " · KERNEL " + pg.fv(SysInfo.sysKernel) + " · SHOT ON BLACK")
+            text: pg.f("text.marginalia", I18n.tr("RYOKU · %1 · KERNEL %2 · SHOT ON BLACK").arg(pg.fv(SysInfo.codename)).arg(pg.fv(SysInfo.sysKernel)))
             color: Tokens.inkFaint
             font.family: Tokens.mono
             font.pixelSize: Tokens.fTiny
@@ -633,7 +633,9 @@ Item {
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.rightMargin: Tokens.s6
-        anchors.topMargin: Tokens.s6
+        // below the corner chrome strip (the FILES and UPDATES chips end at 46):
+        // EDIT used to stack directly under UPDATES and read as a stray
+        anchors.topMargin: Tokens.s6 * 2
         onAct: pg.editing = !pg.editing
     }
 
@@ -650,12 +652,15 @@ Item {
 
         Column {
             id: head
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            spacing: Tokens.s2
+            anchors { left: parent.left; right: parent.right; top: parent.top }
+            // the register row sits off the title: a rule over a 32px
+            // title needs more than the gap between two lines of body text
+            spacing: Tokens.s3
 
             Row {
+                // the register row holds a fixed box, so the rule and the seal keep
+                // their distance from the title on every page
+                height: Tokens.s5
                 spacing: Tokens.s2
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
@@ -695,7 +700,7 @@ Item {
             InlineText {
                 width: parent.width
                 field: "text.tagline"
-                value: pg.f("text.tagline", "A live specimen - cracked, shot on black.")
+                value: pg.f("text.tagline", I18n.tr("A live specimen - cracked, shot on black."))
                 color: Tokens.inkDim
                 font.family: Tokens.display
                 font.italic: true
@@ -722,15 +727,15 @@ Item {
                     opacity: pg.blockOpacity("specs")
                     spacing: 0
                     SpecRow {
-                        k: "Resolution"
+                        k: I18n.tr("Resolution")
                         v: pg.fv(SysInfo.sysResolution) + (SysInfo.sysRefresh && SysInfo.sysRefresh.length > 0 ? " @ " + SysInfo.sysRefresh : "")
                     }
                     SpecRow {
-                        k: "Compositor"
-                        v: SysInfo.sysWM + (SysInfo.sysHyprVer && SysInfo.sysHyprVer !== "-" ? " v" + SysInfo.sysHyprVer : "")
+                        k: I18n.tr("Compositor")
+                        v: SysInfo.sysWM + (SysInfo.sysWmVer && SysInfo.sysWmVer !== "-" ? " v" + SysInfo.sysWmVer : "")
                     }
                     SpecRow {
-                        k: "Uptime"
+                        k: I18n.tr("Uptime")
                         v: pg.fv(SysInfo.sysUptime)
                     }
                 }
@@ -755,7 +760,7 @@ Item {
                         }
                     }
                     Text {
-                        text: SysInfo.sysPkgExplicit + I18n.tr(" EXPLICIT · ") + SysInfo.sysPkgAur + I18n.tr(" AUR · ") + SysInfo.sysPackages + I18n.tr(" TOTAL")
+                        text: I18n.tr("%1 EXPLICIT · %2 AUR · %3 TOTAL").arg(SysInfo.sysPkgExplicit).arg(SysInfo.sysPkgAur).arg(SysInfo.sysPackages)
                         color: Tokens.inkMuted
                         font.family: Tokens.mono
                         font.pixelSize: 10
@@ -814,7 +819,7 @@ Item {
                     Text {
                         anchors.right: parent.right
                         anchors.top: parent.top
-                        text: I18n.tr("No. ") + pg.editionNo()
+                        text: I18n.tr("No. %1").arg(pg.editionNo())
                         color: Tokens.inkDim
                         font.family: Tokens.mono
                         font.pixelSize: Tokens.fMicro
@@ -846,11 +851,11 @@ Item {
         readonly property real leadFrom: cx + 172
         // cy: the callout's y; (fx, fy): the face point it reads; sx: leader start x.
         readonly property var pins: [
-            { x: cx, sx: leadFrom, cy: 338, fx: 0.36, fy: 0.26, k: "core", name: "CORE", big: true },
+            { x: cx, sx: leadFrom, cy: 338, fx: 0.36, fy: 0.26, k: "core", name: I18n.tr("CORE"), big: true },
             { x: cx, sx: leadFrom, cy: 402, fx: 0.30, fy: 0.40, k: "gpu", name: "GPU", big: true },
-            { x: cx, sx: leadFrom, cy: 466, fx: 0.28, fy: 0.54, k: "mem", name: "MEMORY", big: true },
-            { x: cx, sx: leadFrom, cy: 530, fx: 0.40, fy: 0.70, k: "net", name: "NETWORK", big: true },
-            { x: 372, sx: 372, cy: 398, fx: 0.47, fy: 0.44, k: "frac", name: "亀裂 · FRACTURE", big: false }
+            { x: cx, sx: leadFrom, cy: 466, fx: 0.28, fy: 0.54, k: "mem", name: I18n.tr("MEMORY"), big: true },
+            { x: cx, sx: leadFrom, cy: 530, fx: 0.40, fy: 0.70, k: "net", name: I18n.tr("NETWORK"), big: true },
+            { x: 372, sx: 372, cy: 398, fx: 0.47, fy: 0.44, k: "frac", name: "亀裂 · " + I18n.tr("FRACTURE"), big: false }
         ]
 
         // Eyebrow for the live column, with the never-still pulse.
@@ -873,7 +878,7 @@ Item {
             }
             Text {
                 anchors.verticalCenter: parent.verticalCenter
-                text: "脈 · LIVE TELEMETRY"
+                text: "脈 · " + I18n.tr("LIVE TELEMETRY")
                 color: Tokens.inkMuted
                 font.family: Tokens.ui
                 font.pixelSize: Tokens.fTiny
@@ -961,7 +966,7 @@ Item {
         Text {
             anchors.right: parent.right
             anchors.top: parent.top
-            text: I18n.tr("LOAD ") + LiveStats.load.toFixed(2)
+            text: I18n.tr("LOAD %1").arg(LiveStats.load.toFixed(2))
             color: Tokens.inkDim
             font.family: Tokens.mono
             font.pixelSize: Tokens.fMicro

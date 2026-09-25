@@ -71,6 +71,89 @@ func TestMaterializePreservesGeneratedAndUserFiles(t *testing.T) {
 	wantFile(t, filepath.Join(dest, "kitty/current-theme.conf"), "3a5f8a")
 }
 
+// A user who symlinks a seed slot (hypr/user.lua, keyboard.lua, ...) at its live
+// path into a dotfiles repo owns it. materialize must leave the symlink alone --
+// even when the link dangles because the repo is not mounted yet at this point
+// in boot -- instead of laying the shipped default over it. The old check
+// followed the link (os.Stat), read the missing target as an empty slot, and
+// clobbered the symlink with Ryoku's default.
+func TestMaterializeKeepsSymlinkedSeed(t *testing.T) {
+	base, dest := t.TempDir(), t.TempDir()
+	t.Setenv("RYOKU_CONFIG_BASE", base)
+	t.Setenv("XDG_CONFIG_HOME", dest)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	writeFile(t, filepath.Join(base, "hypr/hyprland.lua"), "pcall(require, \"user\")\n")
+	writeFile(t, filepath.Join(base, "hypr/user.lua"), "-- shipped default\n")
+
+	// The user's dotfiles symlink into ~/.config/hypr, pointing at a target that
+	// only appears later, so at materialize time the link dangles.
+	target := filepath.Join(t.TempDir(), "user.lua")
+	link := filepath.Join(dest, "hypr/user.lua")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Materialize(); err != nil {
+		t.Fatalf("materialize over a dangling symlinked seed: %v", err)
+	}
+
+	fi, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("symlinked seed vanished: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("materialize clobbered the user's symlinked user.lua with the shipped default")
+	}
+	if got, _ := os.Readlink(link); got != target {
+		t.Fatalf("symlink now points at %q, want %q", got, target)
+	}
+
+	// Once the dotfiles repo is mounted the link resolves to the user's file.
+	writeFile(t, target, "-- my binds\n")
+	wantFile(t, link, "my binds")
+}
+
+// nvim seeds once like ghostty: the shipped LazyVim starting point lands on a
+// fresh install, then the config is the user's. A later release must not reset
+// their edits, and LazyVim's own state that lives under ~/.config/nvim (never
+// shipped) must be left alone. This is the "toggles reset every update" fix.
+func TestMaterializeSeedsNvimOnce(t *testing.T) {
+	base, dest := t.TempDir(), t.TempDir()
+	t.Setenv("RYOKU_CONFIG_BASE", base)
+	t.Setenv("XDG_CONFIG_HOME", dest)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	writeFile(t, filepath.Join(base, "nvim/init.lua"), "-- ryoku defaults\n")
+	writeFile(t, filepath.Join(base, "nvim/lua/config/options.lua"), "opt.wrap = false\n")
+	writeFile(t, filepath.Join(base, "nvim/lua/plugins/99-ryoku-user.lua"), "return {}\n")
+
+	if err := Materialize(); err != nil {
+		t.Fatalf("fresh materialize: %v", err)
+	}
+	wantFile(t, filepath.Join(dest, "nvim/init.lua"), "ryoku defaults")
+
+	// user tweaks options and their plugin slot, and LazyVim writes its state.
+	writeFile(t, filepath.Join(dest, "nvim/lua/config/options.lua"), "opt.wrap = true\n")
+	writeFile(t, filepath.Join(dest, "nvim/lua/plugins/99-ryoku-user.lua"), "return { \"mine\" }\n")
+	writeFile(t, filepath.Join(dest, "nvim/lazyvim.json"), "{\"extras\":[\"lang.go\"]}\n")
+	// a later release reworks its shipped defaults.
+	writeFile(t, filepath.Join(base, "nvim/init.lua"), "-- ryoku defaults v2\n")
+	writeFile(t, filepath.Join(base, "nvim/lua/config/options.lua"), "opt.wrap = false\nopt.number = true\n")
+
+	if err := Materialize(); err != nil {
+		t.Fatalf("update materialize: %v", err)
+	}
+	// every nvim path the machine had stays exactly as the user left it.
+	wantFile(t, filepath.Join(dest, "nvim/init.lua"), "ryoku defaults\n")
+	wantFile(t, filepath.Join(dest, "nvim/lua/config/options.lua"), "opt.wrap = true")
+	wantFile(t, filepath.Join(dest, "nvim/lua/plugins/99-ryoku-user.lua"), "mine")
+	wantFile(t, filepath.Join(dest, "nvim/lazyvim.json"), "lang.go")
+}
+
 // A managed file dropped from a release is pruned; a generated seed is never
 // pruned, even after the base stops shipping it.
 func TestMaterializePrunesManagedNotSeeds(t *testing.T) {
@@ -79,20 +162,23 @@ func TestMaterializePrunesManagedNotSeeds(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", dest)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
-	writeFile(t, filepath.Join(base, "hypr/old.lua"), "x\n")
+	writeFile(t, filepath.Join(base, "hypr/hyprland.lua"), "require(\"monitors\")\n")
+	writeFile(t, filepath.Join(base, "kitty/old.conf"), "x\n")
 	writeFile(t, filepath.Join(base, "hypr/monitors.lua"), "-- seed\n")
 	if err := Materialize(); err != nil {
 		t.Fatalf("first materialize: %v", err)
 	}
 	writeFile(t, filepath.Join(dest, "hypr/monitors.lua"), "DISPLAY\n") // runtime-regenerated
 
-	// next release drops both the managed file and the monitors seed.
-	os.Remove(filepath.Join(base, "hypr/old.lua"))
+	// next release drops both the managed file and the monitors seed. The managed
+	// file is chosen outside any provider config dir: a compositor's tree is kept
+	// whole when the box switches away from it (see the switched-away test).
+	os.Remove(filepath.Join(base, "kitty/old.conf"))
 	os.Remove(filepath.Join(base, "hypr/monitors.lua"))
 	if err := Materialize(); err != nil {
 		t.Fatalf("second materialize: %v", err)
 	}
-	if sys.Exists(filepath.Join(dest, "hypr/old.lua")) {
+	if sys.Exists(filepath.Join(dest, "kitty/old.conf")) {
 		t.Error("a managed file dropped from the release should be pruned")
 	}
 	wantFile(t, filepath.Join(dest, "hypr/monitors.lua"), "DISPLAY") // seed survives
@@ -205,12 +291,17 @@ func TestMaterializeUserEditsOverlay(t *testing.T) {
 
 	writeFile(t, filepath.Join(base, "hypr/modules/binds.lua"), "-- base binds v1\n")
 	writeFile(t, filepath.Join(base, "hypr/modules/window_rules.lua"), "-- base rules\n")
-	writeFile(t, filepath.Join(base, "hypr/user.lua"), "-- seed header\n") // live-owned seed
+	writeFile(t, filepath.Join(base, "hypr/user.lua"), "-- seed header\n")                    // live-owned seed
+	writeFile(t, filepath.Join(base, "fastfetch/config.jsonc"), "\"source\": \"ryoku\"\n")    // hub-edited seed
+	writeFile(t, filepath.Join(dest, "fastfetch/config.jsonc"), "\"source\": \"my-remix\"\n") // the hub edited it in place
 
 	edits := sys.UserEditsDir()
 	writeFile(t, filepath.Join(edits, "hypr/modules/binds.lua"), "-- my binds\n") // fork
 	writeFile(t, filepath.Join(edits, "hypr/settings.lua"), "-- my settings\n")   // addition (a Hub file)
 	writeFile(t, filepath.Join(edits, "hypr/user.lua"), "-- overlay junk\n")      // live-owned: must be ignored
+	// the retired adopt step froze a fastfetch snapshot into the overlay; laying
+	// it back was "updates keep resetting my fastfetch".
+	writeFile(t, filepath.Join(edits, "fastfetch/config.jsonc"), "\"source\": \"frozen-2025\"\n")
 
 	if err := Materialize(); err != nil {
 		t.Fatalf("materialize: %v", err)
@@ -222,6 +313,9 @@ func TestMaterializeUserEditsOverlay(t *testing.T) {
 	// stale overlay copy cannot wipe the user's in-place edits (if it had clobbered,
 	// the file would read "overlay junk", which does not contain "seed header").
 	wantFile(t, filepath.Join(dest, "hypr/user.lua"), "seed header")
+	// the hub's in-place readout edit survives: the frozen overlay snapshot is
+	// never laid over a live-edited seed.
+	wantFile(t, filepath.Join(dest, "fastfetch/config.jsonc"), "my-remix")
 
 	// a later base changes the forked file: the fork still wins (the user owns it).
 	writeFile(t, filepath.Join(base, "hypr/modules/binds.lua"), "-- base binds v2 (a fix)\n")
@@ -359,13 +453,150 @@ func TestMaterializeDeliversChromiumFlags(t *testing.T) {
 		t.Fatalf("chromium-flags.conf not routed to ~/.config: got %q err %v", b, err)
 	}
 
-	// managed, not a seed: a later `ryoku update` re-lays it, restoring a drifted
-	// copy to the shipped flags.
+	// managed, not a seed: a later `ryoku update` re-lays it. A copy an older
+	// deploy left (no manifest hash) is restored to the shipped flags; a copy
+	// the user edited by hand is kept as a fork instead.
+	os.Remove(materializeStatePath())
 	writeFile(t, routed, "--password-store=basic\n")
 	if err := Materialize(); err != nil {
 		t.Fatalf("re-materialize: %v", err)
 	}
 	if b, err := os.ReadFile(routed); err != nil || string(b) != string(src) {
 		t.Fatalf("update did not re-deliver chromium-flags.conf: got %q err %v", b, err)
+	}
+	writeFile(t, routed, string(src)+"--my-flag\n")
+	if err := Materialize(); err != nil {
+		t.Fatalf("re-materialize after edit: %v", err)
+	}
+	wantFile(t, routed, "--my-flag")
+	wantFile(t, filepath.Join(sys.UserEditsDir(), "chromium-flags.conf"), "--my-flag")
+}
+
+func TestMaterializeSkipsDirectorySymlinks(t *testing.T) {
+	base, dest := t.TempDir(), t.TempDir()
+	t.Setenv("RYOKU_CONFIG_BASE", base)
+	t.Setenv("XDG_CONFIG_HOME", dest)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	writeFile(t, filepath.Join(base, "quickshell/hub/SettingsSheet.qml"), "Item {}\n")
+	target := filepath.Join(base, "quickshell/lockscreen/imports/QtGraphicalEffects/private-target")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "quickshell/lockscreen/imports/QtGraphicalEffects/private")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Materialize(); err != nil {
+		t.Fatalf("materialize with a directory symlink: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dest, "quickshell/lockscreen/imports/QtGraphicalEffects/private")); !os.IsNotExist(err) {
+		t.Fatalf("directory symlink was materialized: %v", err)
+	}
+}
+
+func TestMaterializeKeepsHandEditsAsForks(t *testing.T) {
+	base, dest := t.TempDir(), t.TempDir()
+	t.Setenv("RYOKU_CONFIG_BASE", base)
+	t.Setenv("XDG_CONFIG_HOME", dest)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	writeFile(t, filepath.Join(base, "hypr/modules/window_rules.lua"), "-- base rules v1\n")
+	writeFile(t, filepath.Join(base, "hypr/modules/binds.lua"), "-- base binds v1\n")
+	writeFile(t, filepath.Join(base, "quickshell/shell/shell.qml"), "// shell v1\n")
+	if err := Materialize(); err != nil {
+		t.Fatalf("first materialize: %v", err)
+	}
+
+	// the user edits a shipped file in place; the shell tree is Ryoku's
+	writeFile(t, filepath.Join(dest, "hypr/modules/window_rules.lua"), "-- base rules v1\n-- my rule\n")
+	writeFile(t, filepath.Join(dest, "quickshell/shell/shell.qml"), "// hacked\n")
+	writeFile(t, filepath.Join(base, "hypr/modules/window_rules.lua"), "-- base rules v2\n")
+	writeFile(t, filepath.Join(base, "hypr/modules/binds.lua"), "-- base binds v2\n")
+	if err := Materialize(); err != nil {
+		t.Fatalf("second materialize: %v", err)
+	}
+	wantFile(t, filepath.Join(dest, "hypr/modules/window_rules.lua"), "my rule")
+	wantFile(t, filepath.Join(sys.UserEditsDir(), "hypr/modules/window_rules.lua"), "my rule")
+	wantFile(t, filepath.Join(dest, "hypr/modules/binds.lua"), "base binds v2")
+	wantFile(t, filepath.Join(dest, "quickshell/shell/shell.qml"), "shell v1")
+	if _, err := os.Stat(filepath.Join(sys.UserEditsDir(), "quickshell/shell/shell.qml")); !os.IsNotExist(err) {
+		t.Fatal("the shell tree must never be forked")
+	}
+
+	// dropping the fork takes the shipped version again
+	if err := os.Remove(filepath.Join(sys.UserEditsDir(), "hypr/modules/window_rules.lua")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Materialize(); err != nil {
+		t.Fatalf("third materialize: %v", err)
+	}
+	wantFile(t, filepath.Join(dest, "hypr/modules/window_rules.lua"), "base rules v2")
+}
+
+func TestManifestWithoutHashesStillPrunes(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "manifest")
+	os.WriteFile(state, []byte("a/b.lua\nc.conf\n"), 0o644)
+	if rels := readManifest(state); len(rels) != 2 || rels[0] != "a/b.lua" {
+		t.Fatalf("old manifest rels: %v", rels)
+	}
+	if h := readManifestHashes(state); len(h) != 0 {
+		t.Fatalf("old manifest must carry no hashes, got %v", h)
+	}
+	if err := writeManifest(state, []string{"x"}, map[string]string{"x": "abc"}); err != nil {
+		t.Fatal(err)
+	}
+	if h := readManifestHashes(state); h["x"] != "abc" {
+		t.Fatalf("hash round trip: %v", h)
+	}
+}
+
+// A compositor the machine switched away from keeps its config tree. Its variant
+// package leaves the base, so the manifest prune used to delete the tree and a
+// switch back booted an autogenerated config: no keybinds, no shell autostart.
+func TestMaterializeKeepsTheTreeOfASwitchedAwayCompositor(t *testing.T) {
+	base, dest := t.TempDir(), t.TempDir()
+	t.Setenv("RYOKU_CONFIG_BASE", base)
+	t.Setenv("XDG_CONFIG_HOME", dest)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	// A Hyprland box: the variant ships its tree, materialize lays it.
+	writeFile(t, filepath.Join(base, "hypr/hyprland.lua"), "require(\"settings\")\n")
+	writeFile(t, filepath.Join(base, "hypr/theme.lua"), "-- theme\n")
+	writeFile(t, filepath.Join(base, "hypr/stale.lua"), "-- dropped later\n")
+	if err := Materialize(); err != nil {
+		t.Fatalf("hyprland materialize: %v", err)
+	}
+	wantFile(t, filepath.Join(dest, "hypr/hyprland.lua"), "require(\"settings\")")
+
+	// Switched to niri: the base now ships the niri tree and nothing of hyprland.
+	for _, rel := range []string{"hypr/hyprland.lua", "hypr/theme.lua", "hypr/stale.lua"} {
+		if err := os.Remove(filepath.Join(base, rel)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(base, "niri/config.kdl"), "include \"settings.kdl\"\n")
+	if err := Materialize(); err != nil {
+		t.Fatalf("switch materialize: %v", err)
+	}
+
+	// The niri tree lands and the hyprland tree survives whole, so switching back
+	// restores the desktop instead of an autogenerated config.
+	wantFile(t, filepath.Join(dest, "niri/config.kdl"), "include \"settings.kdl\"")
+	wantFile(t, filepath.Join(dest, "hypr/hyprland.lua"), "require(\"settings\")")
+	wantFile(t, filepath.Join(dest, "hypr/theme.lua"), "theme")
+
+	// A file dropped *within* a tree the box still ships still prunes: the guard
+	// is the switched-away compositor, not a blanket keep.
+	if err := os.Remove(filepath.Join(base, "niri/config.kdl")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(base, "niri/other.kdl"), "x\n")
+	if err := Materialize(); err != nil {
+		t.Fatalf("prune materialize: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "niri/config.kdl")); !os.IsNotExist(err) {
+		t.Fatal("a dropped file inside a shipped tree must still prune")
 	}
 }

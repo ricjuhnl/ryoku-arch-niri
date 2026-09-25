@@ -26,26 +26,37 @@ var (
 
 // ProductEntry is the common registry envelope shared by every extras category.
 type ProductEntry struct {
-	ID             string   `json:"id"`
-	Name           string   `json:"name"`
-	Version        string   `json:"version"`
-	Path           string   `json:"path"`
-	Author         string   `json:"author"`
-	Summary        string   `json:"summary"`
-	Description    string   `json:"description"`
-	Tags           []string `json:"tags"`
-	Screenshots    []string `json:"screenshots"`
-	Accent         string   `json:"accent"`
-	Surface        string   `json:"surface"`
-	Preview        string   `json:"preview"`
-	PreviewRaw     string   `json:"previewRaw,omitempty"`
-	Manifest       string   `json:"manifest"`
-	ManifestSHA256 string   `json:"manifestSha256"`
-	Official       bool     `json:"official,omitempty"`
-	Tagline        string   `json:"tagline,omitempty"`
-	Icon           string   `json:"icon,omitempty"`
-	Hosts          []string `json:"hosts,omitempty"`
-	LastUpdated    string   `json:"lastUpdated,omitempty"`
+	ID                  string   `json:"id"`
+	Name                string   `json:"name"`
+	Version             string   `json:"version"`
+	Path                string   `json:"path"`
+	Author              string   `json:"author"`
+	Summary             string   `json:"summary"`
+	Description         string   `json:"description"`
+	Tags                []string `json:"tags"`
+	Screenshots         []string `json:"screenshots"`
+	Accent              string   `json:"accent"`
+	Surface             string   `json:"surface"`
+	Preview             string   `json:"preview"`
+	PreviewRaw          string   `json:"previewRaw,omitempty"`
+	Manifest            string   `json:"manifest"`
+	ManifestSHA256      string   `json:"manifestSha256"`
+	Official            bool     `json:"official,omitempty"`
+	Tagline             string   `json:"tagline,omitempty"`
+	Icon                string   `json:"icon,omitempty"`
+	Hosts               []string `json:"hosts,omitempty"`
+	LastUpdated         string   `json:"lastUpdated,omitempty"`
+	DownloadPaused      bool     `json:"downloadPaused,omitempty"`
+	DownloadPauseReason string   `json:"downloadPauseReason,omitempty"`
+	// WindowManager names the window manager the product is written for, using
+	// the provider name `ryoku wm use <name>` takes. Empty means any.
+	WindowManager       string `json:"windowManager,omitempty"`
+	WindowManagerReason string `json:"windowManagerReason,omitempty"`
+	// Upstream is the https:// home of the project a product comes from
+	// (a registry entry always names one); Discord is an optional invite to
+	// that project's community. Both surface as links on the detail page.
+	Upstream string `json:"upstream"`
+	Discord  string `json:"discord,omitempty"`
 }
 
 // ProductFile is one manifest-owned source and its installed destination.
@@ -263,7 +274,7 @@ func productUpdateAvailable(installedVersion, availableVersion string) bool {
 func validProductCategory(category string) bool {
 	switch category {
 	case "rices", "lockscreens", "barstyles", "fastfetch", "plugins", "bundles", "decors",
-		"launcher-images", "fastfetch-emblems":
+		"launcher-images", "fastfetch-emblems", "ryotunes-skins":
 		return true
 	default:
 		return false

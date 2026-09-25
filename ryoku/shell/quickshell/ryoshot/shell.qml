@@ -44,7 +44,27 @@ ShellRoot {
     property var moveStart: null
     property var resizing: null
     property var hoverWindow: null
-    property var windowRects: []
+    // Visible windows for the window-pick target, on the outputs' active
+    // workspaces. Empty without windowGeometry: a compositor that does not report
+    // window positions cannot place a pick rect, so window mode drops out and only
+    // region and output selection remain.
+    readonly property var windowRects: {
+        if (!Wm.caps.windowGeometry)
+            return [];
+        var active = ({});
+        var outs = Wm.outputs;
+        for (var i = 0; i < outs.length; i++)
+            if (outs[i].activeWorkspace) active[outs[i].activeWorkspace] = true;
+        var rects = [];
+        var wins = Wm.windows;
+        for (var j = 0; j < wins.length; j++) {
+            var c = wins[j];
+            if (!c.workspace || !active[c.workspace]) continue;
+            if (c.width <= 0 || c.height <= 0) continue;
+            rects.push({ x: c.x, y: c.y, w: c.width, h: c.height, z: c.focusOrder });
+        }
+        return rects;
+    }
     property bool dialogMode: false
     // Manual toolbar offset. The bar parks itself under the region and flips
     // above when there is no room; dragging it covers the case where it still
@@ -65,7 +85,9 @@ ShellRoot {
     readonly property bool testRect: Quickshell.env("RYOSHOT_TESTRECT") === "1"
     readonly property string mode: Quickshell.env("RYOSHOT_MODE") === "monitor" ? "monitor" : "region"
     // The hover target starts from the launch mode and Space cycles it, so one
-    // keybind reaches a region, a window or a whole monitor.
+    // keybind reaches a region or a whole monitor; over a region it also snaps to
+    // the window under the pointer wherever the compositor reports window geometry
+    // (see windowRects).
     property string target: mode
     // RYOSHOT_OPEN=<path>: skip selection and open that image straight in the
     // beautify editor (the capture card's "Beautify after" hands the saved shot
@@ -75,7 +97,6 @@ ShellRoot {
     property bool fromFile: false
     readonly property string homeDir: Quickshell.env("HOME")
     readonly property string shotsDir: (Quickshell.env("XDG_PICTURES_DIR") || (homeDir + "/Pictures")) + "/Screenshots"
-    readonly property string ryoshotLuaPath: homeDir + "/.config/hypr/modules/ryoshot.lua"
     readonly property string pinDir: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/ryoku/pins"
 
     /**
@@ -84,20 +105,20 @@ ShellRoot {
      * drift apart.
      */
     readonly property var toolDescriptors: [
-        { id: "select",    icon: "select",    label: "Select",     key: "v" },
-        { id: "rect",      icon: "rect",      label: "Rectangle",  key: "r" },
-        { id: "ellipse",   icon: "ellipse",   label: "Ellipse",    key: "o" },
-        { id: "line",      icon: "line",      label: "Line",       key: "l" },
-        { id: "arrow",     icon: "arrow",     label: "Arrow",      key: "a" },
-        { id: "pen",       icon: "pen",       label: "Pen",        key: "p" },
-        { id: "marker",    icon: "marker",    label: "Highlight",  key: "h" },
-        { id: "counter",   icon: "counter",   label: "Step",       key: "n" },
-        { id: "text",      icon: "text",      label: "Text",       key: "t" },
-        { id: "blur",      icon: "blur",      label: "Blur",       key: "b" },
-        { id: "redact",    icon: "redact",    label: "Redact",     key: "d" },
-        { id: "spotlight", icon: "spotlight", label: "Spotlight",  key: "s" },
-        { id: "magnify",   icon: "magnify",   label: "Zoom",       key: "z" },
-        { id: "ocr",       icon: "ocr",       label: "Copy text",  key: "g" }
+        { id: "select",    icon: "select",    label: I18n.tr("Select"),     key: "v" },
+        { id: "rect",      icon: "rect",      label: I18n.tr("Rectangle"),  key: "r" },
+        { id: "ellipse",   icon: "ellipse",   label: I18n.tr("Ellipse"),    key: "o" },
+        { id: "line",      icon: "line",      label: I18n.tr("Line"),       key: "l" },
+        { id: "arrow",     icon: "arrow",     label: I18n.tr("Arrow"),      key: "a" },
+        { id: "pen",       icon: "pen",       label: I18n.tr("Pen"),        key: "p" },
+        { id: "marker",    icon: "marker",    label: I18n.tr("Highlight"),  key: "h" },
+        { id: "counter",   icon: "counter",   label: I18n.tr("Step"),       key: "n" },
+        { id: "text",      icon: "text",      label: I18n.tr("Text"),       key: "t" },
+        { id: "blur",      icon: "blur",      label: I18n.tr("Blur"),       key: "b" },
+        { id: "redact",    icon: "redact",    label: I18n.tr("Redact"),     key: "d" },
+        { id: "spotlight", icon: "spotlight", label: I18n.tr("Spotlight"),  key: "s" },
+        { id: "magnify",   icon: "magnify",   label: I18n.tr("Zoom"),       key: "z" },
+        { id: "ocr",       icon: "ocr",       label: I18n.tr("Copy text"),  key: "g" }
     ]
 
     readonly property var toolKeys: {
@@ -441,29 +462,6 @@ ShellRoot {
         if (phase !== "selecting") { if (hoverWindow !== null) hoverWindow = null; return; }
         hoverWindow = target === "monitor" ? monitorAt(gx, gy) : windowAt(gx, gy);
     }
-    function parseWindows(activeWs, json) {
-        var rects = [];
-        try {
-            var arr = JSON.parse(json);
-            for (var i = 0; i < arr.length; i++) {
-                var c = arr[i];
-                if (!c.mapped || c.hidden) continue;
-                if (!c.workspace || activeWs.indexOf(c.workspace.id) === -1) continue;
-                if (!c.size || c.size[0] <= 0 || c.size[1] <= 0) continue;
-                rects.push({ x: c.at[0], y: c.at[1], w: c.size[0], h: c.size[1], z: c.focusHistoryID });
-            }
-        } catch (e) { console.log("ryoshot: parseWindows failed: " + e); }
-        windowRects = rects;
-    }
-    function parseActiveWs(json) {
-        var ids = [];
-        try {
-            var arr = JSON.parse(json);
-            for (var i = 0; i < arr.length; i++)
-                if (arr[i].activeWorkspace) ids.push(arr[i].activeWorkspace.id);
-        } catch (e) { console.log("ryoshot: parseActiveWs failed: " + e); }
-        return ids;
-    }
     function pointerPressed(gx, gy, mods) {
         root.openPopover = "";
         root.shortcutsOpen = false;
@@ -609,8 +607,8 @@ ShellRoot {
         onTriggered: {
             if (root.framePainted) return;
             console.error("ryoshot: no frame rendered 15s after launch, giving up");
-            root.notifySend(qsTr("ryoshot could not draw its overlay"),
-                qsTr("graphics init failed, press the key again"));
+            root.notifySend(I18n.tr("ryoshot could not draw its overlay"),
+                I18n.tr("graphics init failed, press the key again"));
             quitFallback.start();
         }
     }
@@ -639,7 +637,7 @@ ShellRoot {
                 "mkdir -p \"$(dirname \"$2\")\"; [ \"$1\" = \"$2\" ] || cp -- \"$1\" \"$2\"", "sh", file, root.defaultPath]);
         }
         root.quitSoon();
-        root.notifySend(qsTr("Screenshot copied to clipboard"), "");
+        root.notifySend(I18n.tr("Screenshot copied to clipboard"), "");
     }
     function copyTextAndQuit(text) {
         if (root.exported) return;
@@ -658,7 +656,7 @@ ShellRoot {
             "mkdir -p \"$(dirname \"$2\")\"; [ \"$1\" = \"$2\" ] || cp -- \"$1\" \"$2\"", "sh", src, dest]);
         if (Config.copyOnSave)
             Quickshell.execDetached(["ryoku-shell", "clip-copy", "image/png", src]);
-        root.notifyShot(qsTr("Screenshot saved"), dest);
+        root.notifyShot(I18n.tr("Screenshot saved"), dest);
         root.quitSoon();
     }
 
@@ -677,7 +675,7 @@ ShellRoot {
             root.shutter();
             if (Config.copyOnSave)
                 Quickshell.execDetached(["ryoku-shell", "clip-copy", "image/png", auto]);
-            root.notifyShot(qsTr("Screenshot saved"), auto);
+            root.notifyShot(I18n.tr("Screenshot saved"), auto);
             root.quitSoon();
         });
     }
@@ -687,7 +685,7 @@ ShellRoot {
         grabTo(auto, function (ok) {
             if (!ok) { Qt.quit(); return; }
             root.shutter();
-            root.notifyShot(qsTr("Screenshot saved"), auto);
+            root.notifyShot(I18n.tr("Screenshot saved"), auto);
             root.copyImageAndQuit(auto);
         });
     }
@@ -735,7 +733,7 @@ ShellRoot {
         var s = ov.modelData;
         var tmp = "/tmp/ryoshot-ocr.png";
         ov.grabRegion({ x: gx - s.x, y: gy - s.y, w: w, h: h }, tmp, function (ok) {
-            if (!ok) { root.notifySend(qsTr("Could not read that region"), ""); return; }
+            if (!ok) { root.notifySend(I18n.tr("Could not read that region"), ""); return; }
             root.exported = true;
             Quickshell.execDetached(["ryoku-cmd-ocr", "--file", tmp]);
             root.quitSoon();
@@ -862,22 +860,6 @@ ShellRoot {
             if (code === 0 && url.indexOf("http") === 0) root.copyTextAndQuit(url);
             else Qt.quit();
         }
-    }
-
-    Process {
-        id: monitorsProc
-        running: true
-        command: ["hyprctl", "monitors", "-j"]
-        stdout: StdioCollector { id: monitorsOut }
-        onExited: { clientsProc.activeWs = root.parseActiveWs(monitorsOut.text); clientsProc.running = true; }
-    }
-
-    Process {
-        id: clientsProc
-        property var activeWs: []
-        command: ["hyprctl", "clients", "-j"]
-        stdout: StdioCollector { id: clientsOut }
-        onExited: root.parseWindows(activeWs, clientsOut.text)
     }
 
     Process {
@@ -1110,7 +1092,7 @@ ShellRoot {
                 SettingsPanel {
                     id: hotkeyPopover
                     visible: toolbar.visible && root.settingsOpen
-                    luaPath: root.ryoshotLuaPath
+                    defaultChord: "Print"
                     x: Math.max(8, Math.min(toolbar.x + toolbar.gearCenterX - width / 2,
                                             win.width - width - 8))
                     y: Math.max(8, toolbar.y - height - 6)

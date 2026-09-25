@@ -2,10 +2,12 @@ pragma Singleton
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import Ryoku.Ui.Singletons
+import shell.services
 
 /**
- * Local screen-time tracking. Every few seconds it asks Hyprland for the
- * focused window's app class and banks the elapsed time against today's bucket
+ * Local screen-time tracking. Every few seconds it reads the focused window's
+ * app class and banks the elapsed time against today's bucket
  * (per app, per hour, and a running total). "Active" means a real app is
  * focused; nothing syncs and nothing leaves the box. History persists to
  * ~/.local/state/ryoku/screentime.json (last 30 days) so a shell restart
@@ -41,7 +43,7 @@ Singleton {
                 cls: a.cls,
                 seconds: a.seconds,
                 name: (entry && entry.name) ? entry.name : root.prettyClass(a.cls),
-                icon: (entry && entry.icon) ? Quickshell.iconPath(entry.icon, true) : ""
+                icon: (entry && entry.icon) ? Icons.path(entry.icon, true) : ""
             };
         });
     }
@@ -81,10 +83,10 @@ Singleton {
         const h = Math.floor(sec / 3600);
         const m = Math.floor((sec % 3600) / 60);
         if (h > 0)
-            return h + "h " + m + "m";
+            return I18n.tr("%1h %2m").arg(h).arg(m);
         if (m > 0)
-            return m + "m";
-        return sec + "s";
+            return I18n.tr("%1m").arg(m);
+        return I18n.tr("%1s").arg(sec);
     }
     function isRealApp(c) {
         return !!c && !/^(ryoku|quickshell|org\.quickshell)/i.test(c);
@@ -152,29 +154,13 @@ Singleton {
         interval: root.sampleSec * 1000
         running: true
         repeat: true
-        onTriggered: probe.running = true
+        onTriggered: root.accrue(Wm.focusedWindow ? Wm.focusedWindow.appId : "")
     }
     Timer {
         interval: 30000
         running: true
         repeat: true
         onTriggered: if (root.dirty) root.persist()
-    }
-
-    // Direct query beats Quickshell's event-driven activeToplevel, which stays
-    // empty here until a focus change and is not bound by every bar style.
-    Process {
-        id: probe
-        command: ["hyprctl", "activewindow", "-j"]
-        stdout: StdioCollector { id: probeOut }
-        onExited: {
-            var c = "";
-            try {
-                var o = JSON.parse(probeOut.text || "{}");
-                c = (o && (o.class || o.initialClass)) || "";
-            } catch (e) {}
-            root.accrue(c);
-        }
     }
 
     Process {

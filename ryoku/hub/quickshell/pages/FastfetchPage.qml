@@ -38,6 +38,7 @@ Item {
     property bool addOpen: false
     property var installedStoreStyles: []
     property bool storeStyleOpen: false
+    property bool storeStyleRemoveOpen: false
     property string storeStyleError: ""
 
     function storeStyleLabels() {
@@ -53,6 +54,37 @@ Item {
                 return;
             }
         }
+    }
+    // `ryostore remove` takes the category and id positionally, not as a flag.
+    function removeStoreStyle(label) {
+        for (var i = 0; i < pg.installedStoreStyles.length; i++) {
+            var item = pg.installedStoreStyles[i];
+            if (item.name === label) {
+                pg.storeStyleError = "";
+                removeStoreStyleProc.command = ["ryostore", "remove", "fastfetch", item.id];
+                removeStoreStyleProc.running = true;
+                return;
+            }
+        }
+    }
+
+    // A store-installed emblem is one flat PNG in ~/Pictures/ryoemblems, so its
+    // id is the file's stem and removing it is the store's own remove. The
+    // repoint happens after the file is gone, not before: a commit racing the
+    // delete let the reload read the dangling source, and a missing source
+    // normalises to the builtin logo, which is not what anyone asked for.
+    property string repointAfterRemove: ""
+    function removeInstalledEmblem(path) {
+        var file = String(path).split("/").pop();
+        var id = file.replace(/\.png$/i, "");
+        if (id.length === 0)
+            return;
+        pg.storeStyleError = "";
+        pg.repointAfterRemove =
+            String(pg.model.logo.source).indexOf("/ryoemblems/" + file) >= 0
+                ? pg.brandArt[0].path : "";
+        removeEmblemProc.command = ["ryostore", "remove", "fastfetch-emblems", id];
+        removeEmblemProc.running = true;
     }
     function resetToDefault() { resetProc.running = true; }
 
@@ -143,6 +175,39 @@ Item {
             storeStylesProc.running = true;
         }
     }
+    // removal only deletes the store copy; the applied config.jsonc is inlined on
+    // apply, so it stays intact. Refresh both, like the apply path.
+    Process {
+        id: removeStoreStyleProc
+        stderr: StdioCollector { id: removeStoreStyleError }
+        onExited: function (code) {
+            if (code !== 0) {
+                pg.storeStyleError = removeStoreStyleError.text.trim() || I18n.tr("Couldn't remove the Store style.");
+                return;
+            }
+            getProc.running = true;
+            storeStylesProc.running = true;
+        }
+    }
+    Process {
+        id: removeEmblemProc
+        stderr: StdioCollector { id: removeEmblemError }
+        onExited: function (code) {
+            if (code !== 0) {
+                pg.storeStyleError = removeEmblemError.text.trim() || I18n.tr("Couldn't remove the emblem.");
+                pg.repointAfterRemove = "";
+                return;
+            }
+            emblemScan.running = true;
+            if (pg.repointAfterRemove.length > 0) {
+                // pickArt commits, and the commit's own reload replaces getProc here
+                pg.pickArt(pg.repointAfterRemove);
+                pg.repointAfterRemove = "";
+                return;
+            }
+            getProc.running = true;
+        }
+    }
     Process {
         id: resetProc
         command: ["ryoku-hub", "fastfetch", "reset"]
@@ -191,7 +256,7 @@ Item {
         return parseInt(c.substr(0, 2), 16) + ";" + parseInt(c.substr(2, 2), 16) + ";" + parseInt(c.substr(4, 2), 16);
     }
     function rowEditable(kind) { return kind === "tagline" || kind === "header" || kind === "module"; }
-    function rowPlaceholder(kind) { return kind === "module" ? "LABEL" : "text"; }
+    function rowPlaceholder(kind) { return kind === "module" ? I18n.tr("LABEL") : I18n.tr("text"); }
 
     // an image logo source may carry a leading ~; expand it so the real emblem
     // renders as its own specimen instead of a broken tile.
@@ -255,6 +320,7 @@ Item {
         var m = pg.clone();
         m.logo.source = path;
         m.logo.kind = "image";
+        m.logo.dither = false; // a freshly picked emblem is the original, not a bake
         pg.commitModel(m);
     }
     // a dropped file arrives as a file:// URL; import expects a plain path.
@@ -400,6 +466,7 @@ Item {
                     var m = pg.clone();
                     m.logo.source = p;
                     m.logo.kind = importProc.pendingKind;
+                    m.logo.dither = false; // a freshly imported emblem is the original
                     pg.commitModel(m);
                 }
             }
@@ -418,6 +485,56 @@ Item {
     }
     function previewInTerminal() { Spawn.run(["kitty", "-e", "sh", "-c", "ryoku-fastfetch; read -n1"]); }
     function openConfig() { Spawn.run(["kitty", "-e", "nvim", "-O", pg.configPath]); }
+
+    // ---- emblem dither + imported-emblem removal ----------------------------
+    // the 1-bit bake toggles through the backend so it can read/write the sibling
+    // file; the returned source (baked, or the restored original) flows back into
+    // the model like an import. Reuses storeStyleError as the page's error line.
+    Process {
+        id: ditherProc
+        property bool pendingOn: false
+        stderr: StdioCollector { id: ditherError }
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var p = String(this.text).trim();
+                if (p.length) {
+                    var m = pg.clone();
+                    m.logo.source = p;
+                    m.logo.dither = ditherProc.pendingOn;
+                    pg.commitModel(m);
+                }
+            }
+        }
+        onExited: function (code) {
+            if (code !== 0)
+                pg.storeStyleError = ditherError.text.trim() || I18n.tr("Couldn't change the emblem dither.");
+        }
+    }
+    function setDither(v) {
+        pg.storeStyleError = "";
+        ditherProc.pendingOn = v;
+        ditherProc.command = ["ryoku-hub", "fastfetch", "dither-logo", v ? "on" : "off", pg.model.logo.source];
+        ditherProc.running = true;
+    }
+    // an imported emblem is the ryoku-logo.* the backend wrote into the fastfetch
+    // dir; only those (and their bake) can be removed here.
+    function isImportedEmblem(src) { return /\/fastfetch\/ryoku-logo\./.test(String(src || "")); }
+    Process {
+        id: removeLogoProc
+        stderr: StdioCollector { id: removeLogoError }
+        onExited: function (code) {
+            if (code !== 0) {
+                pg.storeStyleError = removeLogoError.text.trim() || I18n.tr("Couldn't remove the imported emblem.");
+                return;
+            }
+            getProc.running = true; // backend repointed config.jsonc; reload to match
+        }
+    }
+    function removeLogo() {
+        pg.storeStyleError = "";
+        removeLogoProc.command = ["ryoku-hub", "fastfetch", "remove-logo"];
+        removeLogoProc.running = true;
+    }
 
     PickFile {
         id: imageDlg
@@ -536,10 +653,17 @@ Item {
     Column {
         id: head
         anchors { left: parent.left; right: parent.right; top: parent.top }
-        anchors.leftMargin: Tokens.s6; anchors.rightMargin: Tokens.s6; anchors.topMargin: Tokens.s6
-        spacing: Tokens.s2
+        anchors.leftMargin: Tokens.s6
+        anchors.rightMargin: Tokens.s6
+        anchors.topMargin: Tokens.s6
+        // the register row sits off the title: a rule over a 32px
+        // title needs more than the gap between two lines of body text
+        spacing: Tokens.s3
 
         Row {
+            // the register row holds a fixed box, so the rule and the seal keep
+            // their distance from the title on every page
+            height: Tokens.s5
             spacing: Tokens.s2
             Rectangle {
                 width: 16; height: 1; color: Tokens.ink
@@ -603,16 +727,20 @@ Item {
 
         Text {
             width: Math.min(parent.width, 720)
-            text: I18n.tr("The branded terminal readout: pick the emblem (an image, ASCII art, or a built-in), choose what shows, reorder and rename the rows, and edit the tagline, with a live preview.")
+            text: I18n.tr("The terminal readout: emblem, rows and tagline, previewed live.")
             color: Tokens.inkMuted; font.family: Tokens.ui
             font.pixelSize: Tokens.fBody; wrapMode: Text.WordWrap
         }
-        Row {
+        // a Flow, not a Row: three verbs plus the count overflow the page at this
+        // width and the last button was cut off the right edge instead of wrapping
+        Flow {
+            width: parent.width
             spacing: Tokens.s3
             Text {
                 visible: pg.installedStoreStyles.length > 0
-                anchors.verticalCenter: parent.verticalCenter
-                text: I18n.tr("STORE LIBRARY") + " · " + pg.installedStoreStyles.length
+                height: Tokens.ctlH
+                verticalAlignment: Text.AlignVCenter
+                text: I18n.tr("STORE LIBRARY \u00b7 %1").arg(pg.installedStoreStyles.length)
                 color: Tokens.inkMuted
                 font.family: Tokens.ui
                 font.pixelSize: Tokens.fTiny
@@ -623,6 +751,11 @@ Item {
                 visible: pg.installedStoreStyles.length > 0
                 text: I18n.tr("APPLY INSTALLED STYLE")
                 onAct: pg.storeStyleOpen = true
+            }
+            Btn {
+                visible: pg.installedStoreStyles.length > 0
+                text: I18n.tr("REMOVE INSTALLED STYLE")
+                onAct: pg.storeStyleRemoveOpen = true
             }
             Btn {
                 text: I18n.tr("RESET TO DEFAULT")
@@ -679,6 +812,7 @@ Item {
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+                WheelScroll { }
 
                 // the whole readout scales to fit the card, so the emblem's size
                 // relative to the text is a true specimen: adjusting Width /
@@ -805,6 +939,7 @@ Item {
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+            WheelScroll { }
 
             Column {
                 id: ctrlCol
@@ -907,6 +1042,29 @@ Item {
                                         font.family: Tokens.ui; font.pixelSize: Tokens.fTiny
                                         font.letterSpacing: 1
                                     }
+                                    // only a store emblem can be removed: the
+                                    // brand marks and the shipped decors are ours
+                                    readonly property bool removable:
+                                        String(artTile.modelData.path).indexOf("/ryoemblems/") >= 0
+                                    Rectangle {
+                                        id: dropMark
+                                        visible: artTile.removable && (artHov.hovered || dropHov.hovered)
+                                        anchors.top: parent.top
+                                        anchors.right: parent.right
+                                        width: Tokens.ctlH
+                                        height: Tokens.ctlH
+                                        radius: Tokens.radius
+                                        color: dropHov.hovered ? Tokens.tint10 : "transparent"
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: "\u00d7"
+                                            color: dropHov.hovered ? Tokens.ink : Tokens.inkFaint
+                                            font.family: Tokens.ui
+                                            font.pixelSize: Tokens.fBody
+                                        }
+                                        HoverHandler { id: dropHov; cursorShape: Qt.PointingHandCursor }
+                                        TapHandler { onTapped: pg.removeInstalledEmblem(artTile.modelData.path) }
+                                    }
                                     HoverHandler { id: artHov; cursorShape: Qt.PointingHandCursor }
                                     TapHandler { onTapped: pg.pickArt(artTile.modelData.path) }
                                 }
@@ -939,6 +1097,17 @@ Item {
                             elide: Text.ElideMiddle
                             text: pg.model.logo.source
                             color: Tokens.inkDim; font.family: Tokens.mono; font.pixelSize: Tokens.fSmall
+                        }
+                    }
+
+                    // remove an imported emblem (ryoku-logo.*) from the fastfetch
+                    // dir; the readout falls back to the shipped emblem.
+                    Item {
+                        width: parent.width; height: 26
+                        visible: pg.model.logo.kind === "image" && pg.isImportedEmblem(pg.model.logo.source)
+                        Btn {
+                            anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                            text: I18n.tr("REMOVE IMPORTED EMBLEM"); onAct: pg.removeLogo()
                         }
                     }
 
@@ -976,6 +1145,24 @@ Item {
                             label: I18n.tr("Pad"); unit: "col"; from: 0; to: 20
                             value: pg.model.logo.padding
                             onModified: (v) => pg.setLogo("padding", v)
+                        }
+                    }
+
+                    // 1-bit bake: bone stipple on transparent (ordered Bayer 4x4),
+                    // the ryodecor look. Off restores the original source.
+                    Item {
+                        width: parent.width; height: 26
+                        visible: pg.model.logo.kind === "image" && pg.model.logo.source.length > 0
+                        Text {
+                            anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                            text: I18n.tr("DITHER"); color: Tokens.inkMuted; font.family: Tokens.ui
+                            font.pixelSize: Tokens.fMicro; font.weight: Font.Medium
+                            font.letterSpacing: Tokens.trackLabel; font.capitalization: Font.AllUppercase
+                        }
+                        Sw {
+                            anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                            on: pg.model.logo.dither === true
+                            onToggled: (v) => pg.setDither(v)
                         }
                     }
 
@@ -1097,7 +1284,7 @@ Item {
                                 anchors.verticalCenter: parent.verticalCenter
                                 width: 108
                                 elide: Text.ElideRight
-                                text: rowItem.modelData.label || rowItem.modelData.kind
+                                text: I18n.tr(rowItem.modelData.label || rowItem.modelData.kind)
                                 color: Tokens.inkDim; font.family: Tokens.ui; font.pixelSize: Tokens.fSmall
                             }
 
@@ -1146,14 +1333,6 @@ Item {
         Rectangle {
             anchors { left: parent.left; right: parent.right; top: parent.top }
             height: 1; color: Tokens.line
-        }
-
-        // marginalia in the bar's dead centre, between the status and the verbs.
-        Marginalia {
-            anchors.horizontalCenter: parent.horizontalCenter
-            anchors.verticalCenter: parent.verticalCenter
-            kana: "情報"
-            glyph: "asanoha"; glyph2: "meander"
         }
 
         Row {
@@ -1241,6 +1420,29 @@ Item {
                 pg.storeStyleOpen = false;
             }
             onDismissed: pg.storeStyleOpen = false
+
+            MouseArea { anchors.fill: parent; z: -1 }
+        }
+    }
+
+    MouseArea {
+        anchors.fill: parent
+        visible: pg.storeStyleRemoveOpen
+        z: 100
+        onClicked: pg.storeStyleRemoveOpen = false
+        onVisibleChanged: if (visible) storeStyleRemovePicker.open()
+
+        Picker {
+            id: storeStyleRemovePicker
+            anchors.centerIn: parent
+            title: I18n.tr("Remove a Store style")
+            options: pg.storeStyleLabels()
+            current: ""
+            onChose: (label) => {
+                pg.removeStoreStyle(label);
+                pg.storeStyleRemoveOpen = false;
+            }
+            onDismissed: pg.storeStyleRemoveOpen = false
 
             MouseArea { anchors.fill: parent; z: -1 }
         }

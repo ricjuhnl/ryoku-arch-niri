@@ -1,2 +1,2 @@
 singleton Motion Motion.qml
-singleton Theme Theme.qml
+singleton OverviewBackdropConfig OverviewBackdropConfig.qml

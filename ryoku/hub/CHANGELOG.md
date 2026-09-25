@@ -1,15 +1,360 @@
 # Changelog: ryoku/hub/
 
-## Unreleased
 
 ### Added
+- **The Machine page owns the two switches it used to describe.** The
+  hardware display-routing knob (GPU Mode / MUX / Optimus) and the live CPU
+  power profile were CLI-only, and both the render card's Hybrid and the
+  firmware's Hybrid read as one setting with two names. The render card now
+  carries a "Display wired to" segment (a pkexec grant makes the firmware
+  write terminal-free; a reboot-pending flag says when it lands) and the CPU
+  card a "Live profile" segment that switches through the shell daemon, the
+  one owner of the pick. Each row names its layer: a software choice applied
+  at next login, versus a hardware switch applied at next reboot
+  (`quickshell/pages/GpuPage.qml`, `backend/gpumux.go`, `backend/daemonclient.go`).
+
+- **Keybinds, rebuilt around use.** A search field that fuzzy-matches labels,
+  hints, categories and key tokens ("clw" finds Close window, "num 3" the
+  number-pad workspaces), a category rail with counts, and one calm column of
+  36px rows: a short label, the key caps, a hint only for the row under the
+  pointer. A shortcut the running compositor cannot do stays listed, greyed,
+  with the reason a hover away. Rebinding clicks the caps and captures the
+  chord through a shortcut inhibitor, so the compositor hands the keys to the
+  Hub instead of running them, on niri as on Hyprland; the number pad records
+  as `Num 1` whatever NumLock says (`pages/KeybindsPage.qml`, `Combos.js`).
+- **The legend comes from the provider.** `ryoku-hub keybinds` asks the running
+  window-manager provider for the full effective bind list from the neutral
+  catalogue, so the page and the cheatsheet show what is actually bound rather
+  than a parse of one compositor's config (`backend/keybinds.go`).
+- **Night light, on the Displays page.** A switch and a colour temperature that
+  read and drive the daemon's `nightlight` topic, shown only where the running
+  compositor's provider offers a night light (`pages/DisplaysPage.qml`).
+- **Idle timeouts, on the Machine page.** Dim, lock, screen off and suspend, on
+  battery and plugged in, plus a master switch and an opt-in for desktops; they
+  persist as the idle policy in `power.json` and re-render the idle daemon's
+  config on every change (`pages/GpuPage.qml`, `schema/GpuPage.js`,
+  `backend/cputune.go`).
+- **A touchpad switch, on the Input page.** Reads and flips the pad through the
+  `input.touchpad` seam action, shown where the provider reports the
+  `touchpadToggle` capability (`pages/InputPage.qml`).
+- **The compositor pages follow the running provider.** The Animations page
+  renders a provider's own animation rows (niri's per-animation springs and
+  curves) beside the shell motion controls and keeps the Hyprland curve editor
+  only where that store is live; the Layer Rules page renders a provider's
+  layer-rule list through a shared list control built from the row's declared
+  fields; the Window Rules action picker takes its vocabulary from the actions
+  the provider honours (`pages/AnimationsPage.qml`, `pages/LayerRulesPage.qml`,
+  `pages/WindowRulesPage.qml`, `SettingsSheet.qml`, `Singletons/Settings.qml`).
+
+### Fixed
+- **No Hyprland wording or dead compositor toggles on niri.** The search
+  vocabulary derives from the active provider's rows and name, the import
+  wizard names the desktop you run and stands down where it cannot read its
+  config, and the Performance page hides the blur, shadow and low-power
+  switches where nothing reads them (`Hub.qml`, `pages/ImportPage.qml`,
+  `pages/PerformancePage.qml`).
+
+### Changed
+- **Ryoku Settings is a full-page window.** It opens at 99% of the screen (the
+  Hyprland rule floats it at the same 99% and centres it; niri sizes the column),
+  so the settings get the room the layout is designed for instead of a 1200px
+  strip (`quickshell/shell.qml`, `hyprland/modules/window_rules.lua`).
+- **One measure, and two columns of cards where they fit.** A framed page reads
+  on a centred column capped at `Tokens.pageMax`, and the schema sheet lays its
+  groups into two columns of cards when the measure holds them, balanced by how
+  tall each group renders. The result is a page that fills its width from the top
+  rather than one long column beside an empty half, with a row's control still a
+  glance from its label (`quickshell/SettingsSheet.qml`, `SchemaPage.qml`).
+- **Less text.** Every page description is one sentence now, and the longest row
+  descriptions were cut to a line (`quickshell/pages/*`, `quickshell/schema/*`).
+- **The rail breathes.** Taller nav rows, a gap between groups, and `Advanced`
+  pinned under a hairline as the only rail-foot control (`quickshell/Hub.qml`).
+
+### Removed
+- **The rich decor tier, and its code.** The rail's Calm|Rich switch turned on a
+  second skin: a register backdrop, a barcode rail foot with the build edition, a
+  film-grain plate, an oversized title, and chapter plates filling dead grid
+  cells with art. Calm was the default and the right answer, so the switch, the
+  tokens behind it (`decorRich`, `showPosters`, `showGrid`, `showGrain`,
+  `monoHeads`), the components (`Decor`, `Placard`, `DitherField`, `DecorStore`)
+  and every call site are gone; a page has one voice now (`Ryoku.Ui`,
+  `docs/ui-ux.md`, "The retired poster layer").
+
+### Added
+- **"Bar drifts when silent" on the Performance page.** Opts the bar's gap
+  stream into drifting on Balanced and Saver when nothing plays, not only on the
+  Performance profile. Off by default (`quickshell/pages/PerformancePage.qml`).
+- **A Plugins page manages every Hyprland compositor plugin.** Settings >
+  Plugins (DESKTOP, next to Windows) takes over the Windows page's Plugins tab
+  and grows into the one place for compositor plugins: a tab per plugin (title
+  bars, glass, image borders, cursor motion, focus flash, the new key sounds,
+  and anything the user adds) with a status card above its settings: where the
+  copy came from (package, built here with commit and date, hyprpm), whether it
+  is running, and the verdict when it is not. A plugin is ABI-locked to the
+  exact Hyprland build, and an Arch bump of aquamarine or hyprutils between two
+  Ryoku releases left a copy the compositor refused with "version mismatch" on
+  every reload while the toggle looked on. Every copy now carries an `.abi`
+  receipt, the card says "built for aquamarine 0.14, running 0.15", and
+  **Rebuild** builds it here from upstream (its hyprpm.toml pin for the
+  installed Hyprland, against the installed headers), with **Rebuild stale**
+  for all of them and **Docs** for each plugin's own documentation. Cursor
+  motion and focus flash keep their rows on the Cursor and Animations pages and
+  are borrowed here, so each row is written once (`pages/PluginsPage.qml`,
+  `schema/PluginsPage.js`, `backend/hyprplugins.go`).
+- **Add a plugin from any git repository.** "+ Add from git" on the Plugins
+  page takes a repository with a `hyprpm.toml`, lists the plugins it declares,
+  builds the ones picked on this machine and lays them beside the bundled
+  ones; Save loads them. Its settings are detected: the `plugin:<ns>:<key>`
+  names read out of the `.so`, typed and defaulted by the compositor once it
+  loads, rendered as native controls (switch, stepper, slider, field) and
+  stored under `plugins.extra.<id>.config`, so a plugin nobody in Ryoku has
+  seen still gets a control for every option. **Remove** drops it again.
+  hyprpm-installed plugins show on the same page (`backend/hyprplugins_build.go`).
+- **`ryoku-hub hypr plugins list|rebuild|add|remove`.** The backend behind the
+  page and the doctor: the roster with source, version, ABI verdict and
+  detected settings; the builder (bundled plugins from upstream, keysounds from
+  the checkout or the shipped source, any git repository), which writes the
+  `.so`, its `.abi` and a build receipt under `~/.local/lib/hyprland/plugins`;
+  and removal. `settings.lua` now loads only a copy whose receipt matches the
+  running compositor and leaves a stale one out with a comment instead of
+  having Hyprland refuse it on every reload, and Save unloads a plugin turned
+  off (a reload only unloads what it loaded itself). See `docs/hyprland-plugins.md`.
+
+### Fixed
+- **Connections lists Bluetooth devices by name, not MAC address.** The
+  Bluetooth tab read a device's name from its BlueZ alias, which BlueZ leaves
+  equal to the device's own address until it learns a name, so an unnamed
+  device showed a MAC even when the device-reported name was available. It now
+  resolves through the shared helper, which skips an address-shaped alias
+  (`quickshell/pages/ConnectionsPage.qml`).
+- **A rice carries its custom reload cover (#146).** The brand layer bundled
+  the mark image but left `reloadCover.path` as the author's absolute path, so
+  applying a rice on another box (or after the source asset moved) wrote a path
+  to a file that was never there and the shell reload fell back to the default
+  cover. Capture now copies the reload-cover asset into the rice and rewrites
+  the path to `rice://`, apply lands it under `rice-assets/<slug>/` like the
+  mark, and a dangling `rice://` or foreign absolute path is dropped so the
+  reload degrades to the default cover cleanly (`backend/rice.go`).
+- **Store lock skins show in Settings again, and a read failure says so.**
+  Settings > Lockscreen listed skins by walking `~/.local/share/qylock/themes`
+  two levels deep for a `Main.qml`, but `os.ReadDir` reports a symlinked theme
+  dir with `IsDir()` false, so a skin installed as (or under) a symlink was
+  dropped and vanished though its files were on disk. The scan now follows a
+  symlinked directory, and `ryoku-hub lock list` unions in a second source: the
+  RyoStore receipts under `~/.local/state/ryoku/store/lockscreens/*.json`, so a
+  receipt-owned product the folder heuristic misses still lists as long as its
+  `Main.qml` is present. A themes dir that exists but cannot be read now returns
+  an `error`, and the page tells "Couldn't read the lock skins list" (retry)
+  apart from "No lock skins installed yet" (browse the Store), instead of one
+  message for both (`backend/lock.go`, `pages/LockscreenPage.qml`).
+- **Plugin settings apply on Save, and preview live.** `hl.plugin.load()` only
+  declares a path; Hyprland loads the declared set after the config pass and
+  reloads once more, and the old `if hl.plugin.<name> ~= nil` guard was only
+  ever true for a plugin that registers Lua functions, so every other plugin's
+  `hl.config` line never ran: key sounds kept its default profile and volume
+  whatever the page said, cursor motion its default mode. The config now runs
+  behind a lookup in `hl.get_loaded_plugins()` (true on that second pass),
+  Save pushes it once more through `hyprctl eval` after the reload, and the
+  live preview pushes it on every edit, so a profile change is heard as it is
+  picked (`backend/hypr.go`).
+- **Key sounds' Docs and Sounds buttons go somewhere real.** Docs opened a
+  README on the GitHub `main` branch that does not carry the plugin yet; it now
+  opens the README shipped beside the plugin's source on this box (the
+  checkout, or `/usr/share/ryoku/hypr-plugins/keysounds`), and a new Sounds
+  button opens the Mechvibes packs the profiles are cut from.
+
+### Added
+- **`ryoku-hub gpu vm` builds and runs the passthrough VM.** A new subcommand
+  generates a performance-tuned libvirt domain named `ryoku-<name>` from an
+  install ISO (host-passthrough CPU with vCPU pinning off the caps engine's
+  topology, Hyper-V enlightenments + hidden KVM for Windows, virtio disk, the
+  dGPU and its sibling functions as `managed='no'` vfio hostdevs so the existing
+  hook binds them, the kvmfr 128 MiB Looking Glass shmem via `qemu:commandline`,
+  swtpm, UEFI), then defines/starts/stops/removes it via virsh and launches
+  `looking-glass-client` on start. Readiness reuses the caps verdict. Ryoport's
+  Looking Glass lane and `ryovm lg` drive it (`backend/gpuvm.go`,
+  `backend/gpudomain.go`).
+- **Add-ons warns on a community plugin.** A plugin whose manifest is not
+  `official: true` opens with the same warning the Store and QS Bar Settings
+  print, before its placement controls (`pages/AddonsPage.qml`).
+
+- **Desktop > General gains managed shell-reload media.** Preview an image,
+  animation, or muted video; use Default or Add Asset with visible format
+  guidance, managed import, a persisted CUSTOM ASSET On/Off switch that retains
+  metadata, and the existing Save/Revert flow (`quickshell/ReloadCoverControl.qml`,
+  `SchemaPage.qml`, `SettingsSheet.qml`, `schema/DesktopPage.js`).
+
+- **The terminal application and account shell are separate choices.** Keybinds
+  > Apps keeps the terminal-emulator picker and adds Fish, Bash and Zsh chips
+  beneath it. A validated privileged backend changes the account login shell,
+  preserves existing startup files, and refreshes the session environment for
+  new terminals (`backend/shellpref.go`, `quickshell/pages/KeybindsPage.qml`).
+
+- **Desktop Visualizer exposes exact colours and two-stop gradients.** The
+  Visualizer tab adds the shared colour picker, a Gradient switch and a second
+  colour picker, keeps extra visualizer state when saving, includes Frame in the
+  look gallery, and paints the chosen gradient in the live preview
+  (`quickshell/Hub.qml`, `quickshell/VizPreview.qml`,
+  `quickshell/schema/DesktopPage.js`).
+
+- **Advanced settings show a worked example.** Free-text advanced fields now
+  carry one: the record editors (Window Rules, Environment, Autostart) show it in
+  the placeholder, and schema rows (the image-border fields, the desktop name and
+  mark) show a faint "e.g. ..." under the description through a new `SettingRow`
+  hint (`ui/SettingRow.qml`, `SettingsSheet.qml`, `schema/*.js`, the record pages).
+- **Global gets one "System font" and a font size.** The Font group is a single
+  font picker plus a size stepper; both apply live to the shell, GTK/Qt apps and
+  the terminal. Pick a monospace like Maple Mono NF for a clean terminal
+  (`pages/GlobalPage.qml`, `schema/GlobalPage.js`).
+- **Enrolling or verifying a fingerprint plays a live scan.** The Sign-in &
+  Fingerprint card shows the shared `FingerprintScan` animation while recording
+  (the ridges and ring fill with each enrollment stage) and while verifying, and
+  a new "Admin prompts" switch wires fingerprint into the pop-up polkit question
+  (`/etc/pam.d/polkit-1`) beside the existing Sudo and Sign-in switches
+  (`pages/LockscreenPage.qml`).
+- **Appearance groups the GTK app-theming controls into one card.** The Theme
+  tab, under the palette scheme, gains an APP THEMING card that surfaces the
+  Theme apps toggle beside two new controls: a GTK theme chooser (Adw, the
+  libadwaita-consistent GTK3 theme that follows the palette; Adwaita, the stock
+  GNOME look; or System, which leaves the choice to the user) writing theme.json
+  `gtkTheme` through `ryoku-hub hypr gtk-theme`, and a GNOME accent switch writing
+  `gnomeAccent` through `ryoku-hub hypr gnome-accent`, which syncs the desktop's
+  accent-colour setting to the nearest named accent so Flatpak and GNOME apps
+  that read the system setting follow the palette too. Both keys are additive and
+  default on absence (`gtkTheme` to `adw`, `gnomeAccent` to on); the hub only
+  persists them and asks the daemon to re-apply, so the daemon stays the single
+  writer of gtk-theme and accent-color. A new `ryoku doctor` reconciler converges
+  GTK session drift, resetting gsettings gtk-theme to the resolved name for the
+  current mode and restoring the settings.ini baselines when they go missing
+  (`quickshell/pages/AppearancePage.qml`, `backend/schemes.go`, `backend/hypr.go`,
+  `cli/internal/doctor/doctor.go`).
+- **Displays lets you type a custom resolution.** The Resolution picker gains a
+  "Custom…" entry: a small W × H @ Hz form on the page's own surface. The typed
+  mode stages into the draft like any other pick, and on Apply it is forced even
+  when the panel does not advertise it -- ryoku-monitor turns a non-advertised
+  mode into a CVT modeline. Because a bad custom mode can come up wrong, Apply
+  arms a 15-second keep-or-revert banner that re-applies the previous layout
+  unless you keep it (`quickshell/pages/DisplaysPage.qml`).
+- **Bar Studio picks the dock look.** The DOCK card gains a Style control -- the
+  five dock looks (Islands, Rail, Ledger, Tanzaku, Seal) as chips -- reading and
+  writing the top-level `dock.style` key on the same live channel its neighbours
+  write `edge` on, so the running desktop repaints as you pick
+  (`quickshell/pages/BarStudioPage.qml`).
+- **The Fastfetch emblem gains a 1-bit dither.** A DITHER switch in the EMBLEM
+  group bakes the emblem to bone-on-transparent with an ordered Bayer 4x4 dither
+  -- the ryodecor look -- as a sibling PNG (`<source>.1bit.png`), never touching
+  the original; off restores it. The bake is pure Go (`image`/`image/png`, no
+  Pillow and no shell-out), and the on/off state rides the source name so nothing
+  new lands in `config.jsonc` (`backend/fastfetch.go`,
+  `quickshell/pages/FastfetchPage.qml`).
+- **Fastfetch emblems and installed Store layouts can be removed.** The EMBLEM
+  group gains REMOVE IMPORTED EMBLEM, which deletes the `ryoku-logo.*` the Hub
+  wrote (and its bake) and repoints the readout at the shipped emblem if it was in
+  use; a store-installed emblem carries a remove mark on its own tile; and the
+  Store row gains REMOVE INSTALLED STYLE beside APPLY. All three call
+  `ryostore remove <category> <id>` and refresh the catalogue and config the way
+  the apply path does. A failed removal surfaces its stderr instead of failing
+  silently (`quickshell/pages/FastfetchPage.qml`, `backend/fastfetch.go`).
+- **The Launcher page can set the solar line.** The Hero card gains a Solar line
+  control -- Palette (follow the wallpaper), Fixed, or Off -- and, when Fixed, a
+  colour field for the line and its sun/moon marker, writing the launcher.json
+  `horizonMode` and `horizonColor` keys (`quickshell/pages/LauncherPage.qml`).
+- **The wallpaper reveal is pickable from Appearance.** The Theme tab gains a
+  WALLPAPER REVEAL card: a Picker over the 22 named reveals plus `random` (the
+  default, a fresh reveal per switch), writing the daemon's
+  `wallpaper.transition_preset` key -- the same one the Shell Studio's Pickers
+  route sets, so the two stay one truth (`quickshell/pages/AppearancePage.qml`).
+- **The form kit gains a stagger-entrance wrapper.** `ui/Entrance.qml` reveals its
+  child with a small rise and fade, offset by an `index` so a column of cards
+  arrives in sequence instead of all at once. Its rise distance, durations and
+  curves come from `Tokens` (the house spatial curve for the rise, the effects
+  curve for the fade); the cumulative delay is capped so a long column still lands
+  well under a second, and under reduce-motion it renders instantly with no timer
+  left running. It is a pure decorator -- the rise is a paint translation and the
+  fade is opacity -- so it never changes the child's measured height, and a plate
+  sized from that measurement stays exact.
+- **Weather and Notes tabs in the Widgets page.** The two new desktop widgets get
+  the same treatment as the rest: a live preview card and their own controls
+  (weather: enable, layout, size, opacity, placement, lock; notes: enable, pad
+  width and height, size, opacity, placement, lock).
+- **Bar Studio's dock controls move to their own card, with the new knobs.** The
+  dock is no longer a qsbar part, so its card is always visible and writes the
+  top-level `dock` store in shell.json: Enabled, Edge (auto / top / bottom / left
+  / right), Auto-hide, Frost, Depth, Magnify, Hover labels, Media chip, and the
+  pinned-apps manager. A rice can carry the dock look too (`dock` joins the shell
+  allowlist).
+- **Desktop widgets can be placed automatically.** Each widget's placement gains
+  "Auto (calm spot)" beside the nine zones: the shell lands it where the wallpaper
+  is quietest and re-places it when the wallpaper changes.
+- **The music widget's visualiser has a look picker.** Bars (the default) or a
+  smoothed wave, in the Widgets page beside the widget's other options.
 - **Displays gains a per-monitor Interface scale.** A stepper on each monitor's
   tuning card (below the compositor scale) sizes the Ryoku shell chrome on that
   display from 50% to 200%, separate from the monitor scale apps render at. It
   writes shell.json `displays.ui_scale.<output>`; the Settings window itself
   honours it too.
+- **QMK/VIA keyboards now follow the theme.** A third lighting provider drives a
+  VIA-enabled QMK board (Framework Laptop 16, custom mechanical keyboards) through
+  `qmk_hid`, alongside OpenRGB and ASUS Aura, so its RGB matrix takes the desktop
+  accent as a solid colour. It appears in Appearance > Lighting when `qmk_hid` is
+  installed and a board is connected, and stays silent otherwise. No EEPROM write
+  per theme change (the colour is re-applied on login and on resume instead).
+
+### Changed
+- **Bar Studio drops its QS Bar and Dock sections.** The page keeps the bar-style
+  gallery and the built-in style editors (Sumi's frame and rails, Obi, Nacre); QS
+  Bar's layout, widgets, form and dock now live in QS Bar Settings, and a QS BAR
+  card under the gallery shows the live layout order (watched off shell.json) and
+  opens the panel with `ryoku-shell bar settings`
+  (`quickshell/pages/BarStudioPage.qml`, `quickshell/schema/BarStudioPage.js`).
+- **Picker style moves to the Desktop page.** The theme, wallpaper and media
+  picker layout leaves Bar Studio for a PICKERS section on the Desktop page; it
+  writes only `qsbar.pickerStyle` through the daemon settings seam, so the bar's
+  own layout and widgets under `qsbar` are never overwritten
+  (`quickshell/pages/DesktopPage.qml`).
 
 ### Fixed
+- **The Keybinds page loads again.** Yesterday's Default Apps fix bound
+  `onChosen` on the page's `AppPicker`, but the type that name resolves to from
+  `pages/` is `Ryoku.Ui.AppPicker`, whose signal is `picked`; Quickshell refused
+  the whole file and the page rendered blank. The handler is `onPicked` again
+  (`pages/KeybindsPage.qml`), and the publish gate now lints every shipped root
+  for this class (`bin/ryoku-dev-lint-qml`).
+- **A rice's fastfetch emblem survives updates.** `rice apply` copied the
+  emblem over the shipped `fastfetch/fastfetch-emblem.png`, which
+  `ryoku materialize` re-lays on every update, so the readout reset to the
+  brand mark each time. It now lands on the user-owned `ryoku-logo.<ext>` path
+  the Fastfetch page's import uses and repoints `config.jsonc` at it; a new
+  `rice emblem` subcommand re-applies the active rice's emblem once a box is on
+  the shipped one, and `ryoku doctor` runs it (`backend/rice.go`,
+  `backend/fastfetch.go`).
+- **The Hub's scheme cards and a rice's colour mode no longer fight the shell's
+  theme.** `shell.json` `theme.theme` is the colour master and the daemon shadows
+  it into `theme.json` `followWallpaper` on every load, so a MONO/LIGHT/DARK pick
+  that only wrote `theme.json` flipped back to the wallpaper palette at the next
+  sync, and picking Wallpaper again in the shell was a no-op because
+  `theme.theme` already said so: the desktop stuck on the wrong palette. Both
+  now select the theme through `ryoku-shell theme` (Wallpaper to follow, Default
+  to lock) and write the shadow after (`backend/schemes.go`, `backend/rice.go`).
+- **"Unlock with fingerprint" can be switched off on a box with no reader.** The
+  switch was gated on a present sensor, so a machine with no fingerprint hardware
+  showed it stuck on with no way to turn it off; it is now always operable (a
+  stored preference needs no hardware) and reads "no fingerprint sensor is
+  connected" when left on without one. Detection is fixed too: `fprintd-list`
+  prints "found 0 devices" with no hardware, which used to register as a device,
+  and a hung probe now times out instead of sitting on "Checking..." forever
+  (`pages/LockscreenPage.qml`).
+- **Steam theming no longer breaks Steam's first launch.** Matugen pre-created
+  the Steam skin output path under `~/.steam/steam/steamui`, so on a box where
+  Steam had never run it created `~/.steam/steam` as a plain directory and stopped
+  Steam laying down its own bootstrap there. Steam directory creation and the
+  Steam template now wait until `~/.steam/steam/steamui` exists (#64)
+  (`backend/matugen.go`, `ipc/matugen.go`).
+- **A row gated by a master switch now looks disabled.** `SettingRow` stopped
+  taking input when its `enabled` went false but kept full ink, so an inert
+  control read as a live one -- the dock's rows under Enabled being the clearest
+  case. The row now dims with the state (`ui/SettingRow.qml`), which the shell's
+  new studio inherits for free.
 - **"Follow focus" on the scrolling layout now scrolls to the window under the
   pointer.** The toggle only flipped the scrolling layout's follow-focus (already
   on by default), so it looked like it did nothing: with the shipped detached
@@ -1550,6 +1895,13 @@
   dead code and their tests; `hwcaps_test.go` asserts the corrected verdict.
 
 ### Added
+- **Security Key/Passkey Support**,
+- Added security key/passkey support for authentication with `pam-u2f`.
+- Added `ryoku security-key` commands for status, enrollment, removal, policy, and PAM wiring.
+- Added support for FIDO2 PIN + touch authentication, including YubiKey FIPS devices that require user verification.
+- Added passkey controls to Lockscreen Settings for sudo, admin prompts, and the SDDM sign-in screen.
+- Added passkey enrollment and removal UI in Lockscreen Settings.
+- Added SDDM greeter support for passkey PIN + touch login prompts.
 - **Appearance / Look grew the rest of the decoration surface**, all live
   previewed: corner softness (`rounding_power`), dim-inactive with strength,
   blur X-ray, vibrancy and noise, shadow sharpness (`render_power`), the new
@@ -1839,6 +2191,18 @@
   field `ryoku status --json` now publishes. "Up to date" shows when current.
 
 ### Fixed
+- **Passkey PAM keeps PIN verification.** Applying sudo, admin-prompt, or SDDM
+  targets now preserves the configured FIDO2 PIN policy instead of falling back to
+  touch-only PAM lines.
+- **The SDDM greeter shows passkey prompts.** Passkey login now surfaces PAM touch
+  prompts and accepts the FIDO PIN through the sign-in field instead of leaving
+  the greeter stuck on a static waiting message.
+- **Passkey setup opens an interactive terminal.** Settings now launches
+  enrollment in a terminal so PIN-based keys can prompt correctly, then refreshes
+  the passkey list after setup.
+- **Passkey management has its own home.** Lockscreen Settings separates passkey
+  policy from fingerprint management and lists enrolled passkeys with remove
+  actions in the right-hand management column.
 - **The login screen keeps the lock skin you pick.** Choosing a lockscreen skin
   applies it as the SDDM greeter too, but a skin pulled from the catalogue
   downloads into a 0700 user-owned dir (`os.MkdirTemp`), and the `cp -a` into

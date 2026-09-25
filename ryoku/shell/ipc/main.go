@@ -7,6 +7,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -63,6 +64,13 @@ func main() {
 		}
 		return
 	}
+	if args[0] == "icons" {
+		// The icon index (every name reachable through the theme chain) is far
+		// larger than the daemon's socket reply and needs no running daemon, so
+		// build and print it here, like `theme catalog`. `icons <name>...` prints
+		// one resolved path per line for spot checks.
+		os.Exit(runIcons(args[1:]))
+	}
 	if args[0] == "browser-host" {
 		// WebExtension native-messaging host: the browser launches this with the
 		// manifest path as argv, then talks over stdin/stdout. Standalone, no
@@ -89,12 +97,14 @@ func sendCommand(line string) error {
 	if _, err := fmt.Fprintln(conn, line); err != nil {
 		return err
 	}
-	buf := make([]byte, 8192)
-	n, readErr := conn.Read(buf)
-	if n == 0 && readErr != nil {
+	// The daemon writes one reply line and closes, so read to EOF rather than a
+	// fixed buffer: `bar catalog --json` and `bar list --json` can exceed one
+	// read's worth.
+	data, readErr := io.ReadAll(conn)
+	if len(data) == 0 && readErr != nil {
 		return fmt.Errorf("no reply from the daemon: %v", readErr)
 	}
-	resp := strings.TrimSpace(string(buf[:n]))
+	resp := strings.TrimSpace(string(data))
 	if strings.HasPrefix(resp, "err ") {
 		return fmt.Errorf("%s", strings.TrimPrefix(resp, "err "))
 	}
@@ -108,12 +118,14 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
 	fmt.Fprintln(os.Stderr, "  ryoku-shell daemon")
 	fmt.Fprintln(os.Stderr, "  ryoku-shell launcher")
-	fmt.Fprintln(os.Stderr, "  ryoku-shell <overview|wallpaper-switcher>")
+	fmt.Fprintln(os.Stderr, "  ryoku-shell overview")
 	fmt.Fprintln(os.Stderr, "  ryoku-shell plugin <id>")
 	fmt.Fprintln(os.Stderr, "  ryoku-shell <visualizer|visualizer-overlay>")
 	fmt.Fprintln(os.Stderr, "  ryoku-shell lock")
-	fmt.Fprintln(os.Stderr, "  ryoku-shell wallpaper [next|init|set <path>]")
 	fmt.Fprintln(os.Stderr, "  ryoku-shell theme [<scheme>|catalog]")
+	fmt.Fprintln(os.Stderr, "  ryoku-shell gtk apply <light|dark>")
 	fmt.Fprintln(os.Stderr, "  ryoku-shell voice")
+	fmt.Fprintln(os.Stderr, "  ryoku-shell bar <list|catalog|move|show|hide|set|position|form|defaults|settings>")
+	fmt.Fprintln(os.Stderr, "  ryoku-shell dock <show|hide|edge|autohide|pin|unpin|list>")
 	fmt.Fprintln(os.Stderr, "  ryoku-shell <reload|status|ping|quit>")
 }

@@ -4,6 +4,7 @@ import QtQuick
 import "../.." as Pill
 import shell.services
 import "../../../../components"
+import Ryoku.Ui.Singletons
 
 // Network entry (contract 06 sec 2.6): a RevealerRow whose inert action button
 // carries the connection-status icon and whose label reports the current link;
@@ -29,6 +30,12 @@ Item {
 
     property bool scanning: false
 
+    // a hidden network has no scanned AP, so it joins through the daemon intent
+    // with 802-11-wireless.hidden set; the form lives under the network list.
+    property bool hiddenConnecting: false
+    property int hiddenPendingId: -1
+    property bool hiddenError: false
+
     implicitHeight: row.implicitHeight
 
     // Detail-page mode: hosted as a sidebar page, the list arrives already
@@ -49,8 +56,26 @@ Item {
         else if (root.pageMode)
             root.forceReveal();
     }
-    Component.onCompleted: Network.setVpnPolling(root, root.open)
     Component.onDestruction: Network.setVpnPolling(root, false)
+
+    function submitHidden(ssid, password) {
+        if (ssid === "" || root.hiddenConnecting)
+            return;
+        root.hiddenError = false;
+        root.hiddenConnecting = true;
+        root.hiddenPendingId = Network.connectWifi(ssid, password, "", true);
+    }
+    Connections {
+        target: Network
+        function onReplied(id, ok, error) {
+            if (id !== root.hiddenPendingId)
+                return;
+            root.hiddenConnecting = false;
+            root.hiddenPendingId = -1;
+            if (!ok)
+                root.hiddenError = true;
+        }
+    }
 
     // Available networks: one row per SSID+band, the strongest AP kept per key
     // and the list sorted by signal descending. Keying by SSID alone (the
@@ -126,14 +151,14 @@ Item {
     readonly property string statusLabel: {
         var base;
         if (Network.kind === "ethernet")
-            base = qsTr("Wired");
+            base = I18n.tr("Wired");
         else if (Network.kind === "wifi")
-            base = Network.activeSsid.length > 0 ? Network.activeSsid : qsTr("Wi-Fi Connected");
+            base = Network.activeSsid.length > 0 ? Network.activeSsid : I18n.tr("Wi-Fi Connected");
         else if (Network.wifiConnectivity === "Connecting")
-            base = qsTr("Connecting…");
+            base = I18n.tr("Connecting…");
         else
-            base = qsTr("Not Connected");
-        return Network.vpnActive ? base + qsTr(" (+WG)") : base;
+            base = I18n.tr("Not Connected");
+        return Network.vpnActive ? I18n.tr("%1 (+WG)").arg(base) : base;
     }
 
     // A full-width primary-accent action button (the reference .ok-button-primary),
@@ -222,7 +247,7 @@ Item {
                 spacing: 10
                 visible: Network.wifiPresent && Network.activeSsid.length > 0
 
-                SectionLabel { text: qsTr("Active Network") }
+                SectionLabel { text: I18n.tr("Active Network") }
 
                 RevealerButton {
                     width: parent.width
@@ -231,7 +256,7 @@ Item {
 
                     PrimaryButton {
                         width: parent.width
-                        text: qsTr("Disconnect")
+                        text: I18n.tr("Disconnect")
                         onClicked: Network.disconnectWifi()
                     }
                 }
@@ -249,7 +274,7 @@ Item {
                         id: wgTitle
                         anchors.centerIn: parent
                         width: parent.width
-                        text: qsTr("Wireguard Connections")
+                        text: I18n.tr("Wireguard Connections")
                     }
                     MenuButton {
                         id: wgAdd
@@ -298,7 +323,7 @@ Item {
                             Text {
                                 anchors.fill: parent
                                 verticalAlignment: Text.AlignVCenter
-                                text: qsTr("Path to .conf")
+                                text: I18n.tr("Path to .conf")
                                 color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurfaceVariant, 3.0)
                                 font: wgPath.font
                                 visible: wgPath.text.length === 0 && !wgPath.activeFocus
@@ -307,13 +332,13 @@ Item {
                     }
                     PrimaryButton {
                         width: parent.width
-                        text: qsTr("Import")
+                        text: I18n.tr("Import")
                         onClicked: if (wgPath.text.length > 0) { Network.wgImport(wgPath.text); wgPath.text = ""; wgImport.expanded = false; }
                     }
                 }
 
                 EmptyLabel {
-                    text: qsTr("No Available WG Connections")
+                    text: I18n.tr("No Available WG Connections")
                     visible: Network.wgTunnels.length === 0
                 }
 
@@ -335,10 +360,10 @@ Item {
                 spacing: 10
                 visible: Network.wifiPresent
 
-                SectionLabel { text: qsTr("Available Networks") }
+                SectionLabel { text: I18n.tr("Available Networks") }
 
                 EmptyLabel {
-                    text: qsTr("No Available Networks")
+                    text: I18n.tr("No Available Networks")
                     visible: root.availableNets.length === 0 && !root.scanning
                 }
 
@@ -354,8 +379,126 @@ Item {
                 }
 
                 EmptyLabel {
-                    text: qsTr("Scanning…")
+                    text: I18n.tr("Scanning…")
                     visible: root.scanning
+                }
+
+                // Hidden network: no scanned object exists, so the join rides
+                // the daemon intent with the hidden flag (see root.submitHidden).
+                Item {
+                    width: parent.width
+                    height: Math.max(hiddenTitle.implicitHeight, hiddenAdd.implicitHeight)
+                    SectionLabel {
+                        id: hiddenTitle
+                        anchors.centerIn: parent
+                        width: parent.width
+                        text: I18n.tr("Hidden Network")
+                    }
+                    MenuButton {
+                        id: hiddenAdd
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        minW: Theme.iconSm + hiddenAdd.pad * 2
+                        minH: Theme.iconSm + hiddenAdd.pad * 2
+                        onClicked: hiddenForm.expanded = !hiddenForm.expanded
+                        MaterialIcon {
+                            anchors.centerIn: parent
+                            font.pixelSize: Theme.iconSm
+                            text: "add"
+                            color: hiddenAdd.contentColor
+                        }
+                    }
+                }
+
+                Column {
+                    id: hiddenForm
+                    property bool expanded: false
+                    width: parent.width
+                    spacing: 8
+                    visible: hiddenForm.expanded
+                    height: visible ? implicitHeight : 0
+
+                    Rectangle {
+                        width: parent.width
+                        height: hiddenSsid.implicitHeight + Theme.paddingSm * 2
+                        radius: Theme.radiusWidget
+                        color: "transparent"
+                        border.width: Theme.borderWidth
+                        border.color: Theme.outline
+                        TextInput {
+                            id: hiddenSsid
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.leftMargin: Theme.paddingMd
+                            anchors.rightMargin: Theme.paddingMd
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurface)
+                            font.family: Theme.fontPrimary
+                            font.pixelSize: Theme.fontSm
+                            clip: true
+                            onAccepted: hiddenPw.forceActiveFocus()
+                            Text {
+                                anchors.fill: parent
+                                verticalAlignment: Text.AlignVCenter
+                                text: I18n.tr("Network name (SSID)")
+                                color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurfaceVariant, 3.0)
+                                font: hiddenSsid.font
+                                visible: hiddenSsid.text.length === 0 && !hiddenSsid.activeFocus
+                            }
+                        }
+                    }
+                    Rectangle {
+                        width: parent.width
+                        height: hiddenPw.implicitHeight + Theme.paddingSm * 2
+                        radius: Theme.radiusWidget
+                        color: "transparent"
+                        border.width: Theme.borderWidth
+                        border.color: Theme.outline
+                        TextInput {
+                            id: hiddenPw
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.leftMargin: Theme.paddingMd
+                            anchors.rightMargin: Theme.paddingMd
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurface)
+                            font.family: Theme.fontPrimary
+                            font.pixelSize: Theme.fontSm
+                            echoMode: TextInput.Password
+                            clip: true
+                            onAccepted: root.submitHidden(hiddenSsid.text, hiddenPw.text)
+                            Text {
+                                anchors.fill: parent
+                                verticalAlignment: Text.AlignVCenter
+                                text: I18n.tr("Password (leave empty if open)")
+                                color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurfaceVariant, 3.0)
+                                font: hiddenPw.font
+                                visible: hiddenPw.text.length === 0 && !hiddenPw.activeFocus
+                            }
+                        }
+                    }
+                    Rectangle {
+                        width: parent.width
+                        visible: root.hiddenError
+                        height: hiddenErrText.implicitHeight + Theme.paddingSm * 2
+                        radius: Theme.radiusWidget
+                        color: Theme.error
+                        Text {
+                            id: hiddenErrText
+                            anchors.centerIn: parent
+                            text: I18n.tr("Error Connecting")
+                            color: Theme.inkOn(Theme.error, Theme.onError)
+                            font.family: Theme.fontPrimary
+                            font.pixelSize: Theme.fontMd
+                            font.weight: Font.Bold
+                        }
+                    }
+                    PrimaryButton {
+                        width: parent.width
+                        text: root.hiddenConnecting ? I18n.tr("Connecting…") : I18n.tr("Connect")
+                        enabled: hiddenSsid.text.length > 0 && !root.hiddenConnecting
+                        onClicked: root.submitHidden(hiddenSsid.text, hiddenPw.text)
+                    }
                 }
             }
         }
@@ -382,18 +525,18 @@ Item {
                 PrimaryButton {
                     width: parent.width
                     visible: !wgRow.tun.active
-                    text: qsTr("Connect")
+                    text: I18n.tr("Connect")
                     onClicked: Network.wgActivate(wgRow.tun.uuid)
                 }
                 PrimaryButton {
                     width: parent.width
                     visible: wgRow.tun.active
-                    text: qsTr("Disconnect")
+                    text: I18n.tr("Disconnect")
                     onClicked: Network.wgDeactivate(wgRow.tun.uuid)
                 }
                 PrimaryButton {
                     width: parent.width
-                    text: qsTr("Delete")
+                    text: I18n.tr("Delete")
                     onClicked: Network.wgDelete(wgRow.tun.uuid)
                 }
             }
@@ -469,7 +612,7 @@ Item {
                         Text {
                             anchors.fill: parent
                             verticalAlignment: Text.AlignVCenter
-                            text: qsTr("Password")
+                            text: I18n.tr("Password")
                             color: Theme.inkOn(Theme.effectiveSurface, Theme.onSurfaceVariant, 3.0)
                             font: pwEntry.font
                             visible: pwEntry.text.length === 0 && !pwEntry.activeFocus
@@ -498,7 +641,7 @@ Item {
                     Text {
                         id: errText
                         anchors.centerIn: parent
-                        text: qsTr("Error Connecting")
+                        text: I18n.tr("Error Connecting")
                         color: Theme.inkOn(Theme.error, Theme.onError)
                         font.family: Theme.fontPrimary
                         font.pixelSize: Theme.fontMd
@@ -508,7 +651,7 @@ Item {
 
                 PrimaryButton {
                     width: parent.width
-                    text: qsTr("Connect")
+                    text: I18n.tr("Connect")
                     enabled: !apRow.connecting
                     onClicked: apRow.doConnect()
                 }

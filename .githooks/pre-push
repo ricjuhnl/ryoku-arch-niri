@@ -3,8 +3,7 @@
 # Ryoku Arch pre-push.
 # safety net for pushes to origin:
 #   1. block force-push to main (rewriting history that users pull from)
-#   2. refuse pushes of upstream-tracking branches that carry pushRemote=no_push
-#   3. CI-equivalent ShellCheck over non-vendored shell files in the push
+#   2. CI-equivalent ShellCheck over non-vendored shell files in the push
 # bypass with --no-verify; RYOKU_ALLOW_FORCE_MAIN=1 to override on purpose.
 
 set -euo pipefail
@@ -42,16 +41,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     fi
   fi
 
-  # 2. refuse pushes of upstream-tracking branches.
-  # they mirror basecamp/omarchy, never land on origin.
-  case "$local_ref" in
-    refs/heads/upstream-dev|refs/heads/upstream-master)
-      fail "refusing to push $local_ref: this branch mirrors upstream omarchy and must not be published to origin."
-      ;;
-  esac
 done
 
-# 3. ShellCheck shell scripts in the push (skip if shellcheck missing).
+# 2. ShellCheck shell scripts in the push (skip if shellcheck missing).
 if command -v shellcheck >/dev/null 2>&1; then
 	empty_tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904
 	files=()
@@ -73,5 +65,67 @@ if command -v shellcheck >/dev/null 2>&1; then
 		printf '%s\0' "${files[@]}" | sort -zu | xargs -0 -r shellcheck -x || fail "ShellCheck failed on pushed shell files."
 	fi
 fi
+
+# 3. commit subjects stay short. the new commits in this push (which a bypassed
+#    or missing commit-msg hook could have let through) must keep a subject of
+#    72 chars or fewer, so the log and the generated release notes read at a
+#    glance. a brand-new branch has no remote base to bound the range and its
+#    history predates the rule, so it is skipped.
+while read -r _ local_sha _ remote_sha; do
+  [[ $local_sha == "$zero" ]] && continue
+  [[ $remote_sha == "$zero" || -z $remote_sha ]] && continue
+  while IFS= read -r subject; do
+    case "$subject" in
+      Revert\ *|fixup!\ *|squash!\ *) continue ;;
+    esac
+    # A PR merged on GitHub gets " (#NNN)" appended to the title after the
+    # author's commit-msg hook already ran, so the pushed subject can exceed
+    # the limit through no fault of the author. Measure what they wrote.
+    if [[ $subject =~ ^(.*)\ \(#[0-9]+\)$ ]]; then
+      subject="${BASH_REMATCH[1]}"
+    fi
+    if ((${#subject} > 72)); then
+      fail "a pushed commit subject is ${#subject} chars (limit 72): $subject"
+    fi
+  done < <(git log --no-merges --format='%s' "$remote_sha..$local_sha")
+done <"$push_updates"
+
+# 4. PKGBUILD dependency resolution. A depends/provides change that no longer
+#    resolves (a typo, an AUR-only name, a virtual nothing provides) builds fine
+#    with makepkg --nodeps but fails the publish gate AFTER the push, stranding a
+#    whole release on the testing channel. Run the same check the publish uses,
+#    but only when a pushed commit touches release/packages, so an ordinary push
+#    pays nothing. Skips itself when pacman is absent (the script handles that).
+while read -r _ local_sha _ remote_sha; do
+  [[ $local_sha == "$zero" ]] && continue
+  base=$remote_sha
+  [[ $base == "$zero" || -z $base ]] && base=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+  if git diff --name-only "$base" "$local_sha" -- 'release/packages/**/PKGBUILD' | grep -q .; then
+    repo_root="$(git rev-parse --show-toplevel)"
+    if [[ -x $repo_root/bin/ryoku-dev-verify-pkgbuild-deps ]]; then
+      "$repo_root/bin/ryoku-dev-verify-pkgbuild-deps" \
+        || fail "a PKGBUILD dependency does not resolve; fix it or the publish will fail after this push."
+    fi
+    break
+  fi
+done <"$push_updates"
+
+# 5. Vendored window-manager seam copies. They are checked in, so a change to
+#    ryoku/wm leaves every consumer running the old detection and capability
+#    rules until someone re-copies them. Only runs when the push touches the seam
+#    or a copy, so an ordinary push pays nothing.
+while read -r _ local_sha _ remote_sha; do
+  [[ $local_sha == "$zero" ]] && continue
+  base=$remote_sha
+  [[ $base == "$zero" || -z $base ]] && base=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+  if git diff --name-only "$base" "$local_sha" -- 'ryoku/wm/**' '**/vendor/ryoku-wm/**' | grep -q .; then
+    repo_root="$(git rev-parse --show-toplevel)"
+    if [[ -x $repo_root/bin/ryoku-dev-verify-wm-vendor ]]; then
+      "$repo_root/bin/ryoku-dev-verify-wm-vendor" \
+        || fail "a vendored window-manager seam copy is stale; re-copy it from ryoku/wm."
+    fi
+    break
+  fi
+done <"$push_updates"
 
 exit 0

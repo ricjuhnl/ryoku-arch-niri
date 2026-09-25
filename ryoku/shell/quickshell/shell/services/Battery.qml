@@ -2,6 +2,7 @@ pragma Singleton
 import QtQuick
 import Quickshell
 import Quickshell.Services.UPower
+import Ryoku.Ui.Singletons
 
 // Laptop battery state from UPower's display device. A desktop without a
 // battery reports present=false so the rail omits the display-only status chip.
@@ -35,6 +36,13 @@ Singleton {
     readonly property bool discharging: state === UPowerDeviceState.Discharging
     readonly property bool low: !charging && pct <= 20
 
+    // Real line-power state. UPower's global OnBattery tracks the mains adapter,
+    // not the cell, so a full battery idling on AC still reads as on-AC and
+    // pulling the plug flips immediately. This is the signal for "may I enter a
+    // high-performance mode", which charging/discharging cannot answer on a
+    // machine that holds the cell at a charge limit. No battery reads as AC.
+    readonly property bool onAc: !UPower.onBattery
+
     readonly property real rateW: !batDev ? 0
         : (discharging ? -batDev.changeRate : (charging ? batDev.changeRate : 0))
     readonly property real capacityWh: batDev ? batDev.energyCapacity : 0
@@ -47,16 +55,16 @@ Singleton {
     readonly property string timeStr: !batDev ? ""
         : (charging ? fmt(batDev.timeToFull) : (discharging ? fmt(batDev.timeToEmpty) : ""))
 
-    readonly property string stateLabel: charging ? "Charging"
-        : (full ? "On AC · Full"
-        : (discharging ? "Discharging" : "On AC"))
+    readonly property string stateLabel: charging ? I18n.tr("Charging")
+        : (full ? I18n.tr("On AC · Full")
+        : (discharging ? I18n.tr("Discharging") : I18n.tr("On AC")))
 
     function fmt(sec) {
         var s = Math.max(0, Math.round(sec));
         var h = Math.floor(s / 3600);
         var m = Math.floor((s % 3600) / 60);
         if (h > 0)
-            return h + "h " + m + "m";
-        return m + "m";
+            return I18n.tr("%1h %2m").arg(h).arg(m);
+        return I18n.tr("%1m").arg(m);
     }
 }

@@ -59,6 +59,9 @@ Item {
     property bool installed: true
     property bool daemonEnabled: false
     property bool running: false
+    // the port the daemon reports, not a literal: a user who changed it in
+    // ~/.config/ryoku/rashin.json still gets a link that resolves.
+    property int port: 3600
     property bool vaultExists: false
     property int vaultFiles: 0
     property bool hermesInstalled: false
@@ -68,10 +71,17 @@ Item {
     property string hermesVersion: ""
     property int agentsPresent: 0
     property int agentsWired: 0
+    // manifest: the full agent surface (paths + agents + chat backends), from
+    // `ryoku-rashin paths --json`. Drives the Agents and Connect sections.
+    property var agentList: []
+    property var chatBackends: []
+    property string skillPath: ""
+    property string prowlPath: ""
+    property var vaultItems: []
 
     readonly property string wiredSummary: pg.agentsPresent > 0
-        ? pg.agentsWired + " / " + pg.agentsPresent + " wired"
-        : "none yet"
+        ? I18n.tr("%1 / %2 wired").arg(pg.agentsWired).arg(pg.agentsPresent)
+        : I18n.tr("none yet")
 
     // live Hermes setup progress, mirrored from the daemon's setup.json.
     property string setupPhase: ""
@@ -79,7 +89,7 @@ Item {
     property bool setupOk: true
 
     Component.onCompleted: pg.refresh()
-    function refresh() { statusProc.running = true; }
+    function refresh() { statusProc.running = true; manifestProc.running = true; }
 
     Process {
         id: statusProc
@@ -94,6 +104,8 @@ Item {
                     pg.installed = true;
                     pg.daemonEnabled = o.enabled === true;
                     pg.running = o.running === true;
+                    if (typeof o.port === "number" && o.port > 0)
+                        pg.port = o.port;
                     var v = o.vault || ({});
                     pg.vaultExists = v.exists === true;
                     pg.vaultFiles = (typeof v.files === "number") ? v.files : 0;
@@ -155,8 +167,61 @@ Item {
     function runSetup() {
         Spawn.run(["kitty", "--class", "ryoku-rashin-setup", "-e", "ryoku-rashin", "setup"]);
     }
+    // Open the dashboard the daemon actually serves. Two things used to send a
+    // user to a browser error they read as a 404: the port was hardcoded here
+    // while the daemon reads it from its own config, and the button opened the
+    // URL even with nothing listening. Take the port from `status --json` and
+    // start the daemon first when it is down; `ryoku-rashin serve` returns once
+    // the socket is up, so the browser never races it.
     function openDashboard() {
-        Spawn.run(["xdg-open", "http://127.0.0.1:3600"]);
+        var url = "http://127.0.0.1:" + pg.port;
+        if (pg.running) {
+            Spawn.run(["xdg-open", url]);
+            return;
+        }
+        openProc.command = ["sh", "-c",
+            "ryoku-rashin serve --if-enabled >/dev/null 2>&1 & "
+            + "for i in 1 2 3 4 5 6 7 8 9 10; do "
+            + "ryoku-rashin status --json 2>/dev/null | grep -q '\"running\":true' && break; sleep 0.3; done; "
+            + "xdg-open " + url];
+        openProc.running = true;
+    }
+    Process { id: openProc; onExited: pg.refresh() }
+
+    // the agent surface, refreshed with status. Best effort: a missing binary
+    // leaves the sections empty rather than erroring.
+    Process {
+        id: manifestProc
+        command: ["sh", "-c", "ryoku-rashin paths --json"]
+        stderr: StdioCollector {}
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    var m = JSON.parse(this.text);
+                    pg.skillPath = (m.skill && m.skill.path) || "";
+                    pg.prowlPath = (m.prowl && m.prowl.path) || "";
+                    pg.vaultItems = m.vault || [];
+                    pg.agentList = m.agents || [];
+                    pg.chatBackends = m.chatBackends || [];
+                } catch (e) {}
+            }
+        }
+    }
+    Process { id: wireProc; onExited: pg.refresh() }
+    Process { id: chatProc; onExited: pg.refresh() }
+    // Wiring drops the pointer + the ryoku skill + prowl's skills into an
+    // agent (or every present one); useChatAgent picks who drives the chat.
+    function wireAgent(id) { wireProc.command = ["ryoku-rashin", "wire", id]; wireProc.running = true; }
+    function wireAll() { wireProc.command = ["ryoku-rashin", "wire"]; wireProc.running = true; }
+    function useChatAgent(id) { chatProc.command = ["ryoku-rashin", "agent", "use", id]; chatProc.running = true; }
+    // Copy the paste snippet for an agent Rashin does not wire directly.
+    function copySnippet() { Quickshell.execDetached(["sh", "-c", "ryoku-rashin paths --snippet | wl-copy"]); }
+    // whether an agent can drive the Super+S chat (its ACP adapter is present).
+    function agentCanChat(id) {
+        for (var i = 0; i < pg.chatBackends.length; i++)
+            if (pg.chatBackends[i].id === id)
+                return pg.chatBackends[i].available === true;
+        return false;
     }
 
     // ── reusable poster parts ────────────────────────────────────────────────
@@ -306,6 +371,92 @@ Item {
         }
     }
 
+    // one detected coding agent: name, wiring state, skill/chat stamps, and a
+    // one-click WIRE (inject the pointer + skill + prowl).
+    component AgentRow: Rectangle {
+        id: ar
+        property var agent: ({})
+        property bool canChat: false
+        width: parent ? parent.width : 0
+        height: 56
+        color: hx.paper2
+        border.width: 1
+        border.color: (ar.agent.present && ar.agent.wired) ? Qt.rgba(hx.ink.r, hx.ink.g, hx.ink.b, 0.3) : hx.line
+        opacity: ar.agent.present ? 1 : 0.5
+
+        Column {
+            anchors { left: parent.left; leftMargin: 16; right: arActions.left; rightMargin: 12; verticalCenter: parent.verticalCenter }
+            spacing: 3
+            Text {
+                width: parent.width
+                text: ar.agent.name || ar.agent.id || ""
+                color: hx.ink; font.family: pg.fDisplay; font.pixelSize: 16; elide: Text.ElideRight
+            }
+            Text {
+                width: parent.width
+                text: !ar.agent.present ? I18n.tr("not installed")
+                    : (ar.agent.wired ? I18n.tr("wired to the vault") : I18n.tr("present \u00b7 not wired yet"))
+                color: hx.inkDim; font.family: pg.fMono; font.pixelSize: 11; elide: Text.ElideRight
+            }
+        }
+        Row {
+            id: arActions
+            anchors { right: parent.right; rightMargin: 12; verticalCenter: parent.verticalCenter }
+            spacing: Tokens.s2
+            Stamp { visible: ar.agent.skillWired === true; label: "SKILL"; tint: hx.teal; anchors.verticalCenter: parent.verticalCenter }
+            Stamp { visible: ar.canChat; label: "CHAT"; tint: hx.slate; anchors.verticalCenter: parent.verticalCenter }
+            Rectangle {
+                visible: ar.agent.present === true
+                anchors.verticalCenter: parent.verticalCenter
+                width: wbT.implicitWidth + Tokens.s4 * 2
+                height: 30
+                color: ar.agent.wired ? "transparent" : hx.ink
+                border.width: 1
+                border.color: ar.agent.wired ? hx.line : hx.ink
+                Text {
+                    id: wbT
+                    anchors.centerIn: parent
+                    text: ar.agent.wired ? I18n.tr("RE-WIRE") : I18n.tr("WIRE")
+                    color: ar.agent.wired ? hx.ink : hx.paper
+                    font.family: pg.fMono; font.pixelSize: 10; font.letterSpacing: 2; font.weight: Font.Medium
+                }
+                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: pg.wireAgent(ar.agent.id) }
+            }
+        }
+    }
+
+    // one manifest path: label + who owns it (generated/yours/read-only) + the
+    // resolved location (dim when absent).
+    component PathRow: Row {
+        id: pr
+        property string label: ""
+        property string path: ""
+        property string owner: ""
+        property bool ok: true
+        readonly property int labelW: Math.round(pr.width * 0.22)
+        readonly property int ownerW: 76
+        width: parent ? parent.width : 0
+        spacing: Tokens.s3
+        Text {
+            width: pr.labelW
+            text: pr.label; color: pr.ok ? hx.ink : hx.inkDim
+            font.family: pg.fMono; font.pixelSize: 12; elide: Text.ElideRight
+        }
+        Text {
+            width: pr.ownerW
+            text: pr.owner
+            color: pr.owner === "yours" ? hx.teal : hx.inkDim
+            font.family: pg.fMono; font.pixelSize: 10; font.letterSpacing: 1
+            anchors.verticalCenter: parent.verticalCenter
+        }
+        Text {
+            width: pr.width - pr.labelW - pr.ownerW - pr.spacing * 2
+            text: pr.path === "" ? I18n.tr("not installed") : pr.path
+            color: pr.ok ? hx.tan : hx.inkDim
+            font.family: pg.fMono; font.pixelSize: 12; elide: Text.ElideLeft
+        }
+    }
+
     // ── the page: warm paper, one scrolling poster column ────────────────────
     Rectangle { anchors.fill: parent; color: hx.paper }
 
@@ -317,6 +468,7 @@ Item {
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+        WheelScroll { }
 
         Column {
             id: body
@@ -392,9 +544,7 @@ Item {
             // ── tagline ──────────────────────────────────────────────────────
             Text {
                 width: parent.width
-                text: I18n.tr("The optional local agent OS. A resident Hermes agent keeps a living map of this ")
-                    + I18n.tr("machine - hardware, packages, every config beside the binary that owns it - so your ")
-                    + I18n.tr("coding agents read the terrain instead of rediscovering it. Nothing ever leaves the box.")
+                text: I18n.tr("The optional local agent OS. A resident Hermes agent keeps a living map of this machine - hardware, packages, every config beside the binary that owns it - so your coding agents read the terrain instead of rediscovering it. Nothing ever leaves the box.")
                 color: hx.ink; font.family: pg.fMono; font.pixelSize: 14
                 wrapMode: Text.WordWrap; lineHeight: 1.5
             }
@@ -429,7 +579,7 @@ Item {
                         Text {
                             width: parent.width
                             text: pg.installed
-                                ? (pg.running ? I18n.tr("Running \u00b7 127.0.0.1:3600")
+                                ? (pg.running ? I18n.tr("Running \u00b7 127.0.0.1:%1").arg(pg.port)
                                    : (pg.daemonEnabled ? I18n.tr("Enabled \u00b7 starting\u2026") : I18n.tr("Off \u00b7 switch on to start it with the desktop")))
                                 : I18n.tr("Not installed \u00b7 install ryoku-rashin")
                             color: hx.inkDim; font.family: pg.fMono; font.pixelSize: 11; elide: Text.ElideRight
@@ -466,7 +616,7 @@ Item {
                         }
                         Text {
                             width: parent.width
-                            text: pg.hermesConfigured ? (pg.hermesModel || "configured") : "-"
+                            text: pg.hermesConfigured ? (pg.hermesModel || I18n.tr("configured")) : "-"
                             color: hx.ink; font.family: pg.fDisplay
                             font.pixelSize: pg.hermesConfigured ? 30 : 26
                             elide: Text.ElideRight
@@ -474,7 +624,7 @@ Item {
                         Text {
                             width: parent.width
                             text: pg.hermesConfigured
-                                ? ("via " + (pg.hermesProvider || "hermes") + (pg.hermesVersion ? I18n.tr("  \u00b7  Hermes v") + pg.hermesVersion : ""))
+                                ? (I18n.tr("via %1").arg(pg.hermesProvider || "hermes") + (pg.hermesVersion ? I18n.tr("  \u00b7  Hermes v%1").arg(pg.hermesVersion) : ""))
                                 : (pg.hermesInstalled ? I18n.tr("run setup to choose a model") : I18n.tr("set up Hermes to choose a model"))
                             color: hx.inkDim; font.family: pg.fMono; font.pixelSize: 11; elide: Text.ElideRight
                         }
@@ -497,30 +647,129 @@ Item {
                     readonly property real cellW: (width - columnSpacing * (columns - 1)) / columns
 
                     FnCard {
-                        width: fnGrid.cellW; index: "01"; kanji: "\u66f8\u5eab"; name: "VAULT"; accent: hx.teal
-                        desc: I18n.tr("The living map your agents read - every config beside the binary that owns it.")
-                        stat: pg.vaultExists ? (pg.vaultFiles + " files") : ""
+                        width: fnGrid.cellW; index: "01"; kanji: "\u66f8\u5eab"; name: I18n.tr("VAULT"); accent: hx.teal
+                        desc: I18n.tr("The living map your agents read, beside each binary.")
+                        stat: pg.vaultExists ? I18n.tr("%1 files").arg(pg.vaultFiles) : ""
                     }
                     FnCard {
-                        width: fnGrid.cellW; index: "02"; kanji: "\u8a18\u61b6"; name: "MEMORY"; accent: hx.orange
+                        width: fnGrid.cellW; index: "02"; kanji: "\u8a18\u61b6"; name: I18n.tr("MEMORY"); accent: hx.orange
                         desc: I18n.tr("What Hermes remembers, carried across every session.")
                     }
                     FnCard {
-                        width: fnGrid.cellW; index: "03"; kanji: "\u6280"; name: "SKILLS"; accent: hx.slate
-                        desc: I18n.tr("Toolsets Hermes wields on demand - search, files, the web, more.")
+                        width: fnGrid.cellW; index: "03"; kanji: "\u6280"; name: I18n.tr("SKILLS"); accent: hx.slate
+                        desc: I18n.tr("Toolsets Hermes wields: search, files, the web.")
                     }
                     FnCard {
-                        width: fnGrid.cellW; index: "04"; kanji: "\u4e94\u4eba\u8846"; name: "AGENTS"; accent: hx.tan
+                        width: fnGrid.cellW; index: "04"; kanji: "\u4e94\u4eba\u8846"; name: I18n.tr("AGENTS"); accent: hx.tan
                         desc: I18n.tr("Your coding agents, wired to one shared map of the machine.")
                         stat: pg.agentsPresent > 0 ? pg.wiredSummary : ""
                     }
                     FnCard {
-                        width: fnGrid.cellW; index: "05"; kanji: "\u5bfe\u8a71"; name: "CHAT"; accent: hx.red
-                        desc: I18n.tr("Talk to Hermes - in the dashboard, or run it in any terminal.")
+                        width: fnGrid.cellW; index: "05"; kanji: "\u5bfe\u8a71"; name: I18n.tr("CHAT"); accent: hx.red
+                        desc: I18n.tr("Talk to Hermes in the dashboard or a terminal.")
                     }
                     FnCard {
-                        width: fnGrid.cellW; index: "06"; kanji: "\u7f85\u91dd"; name: "CODE"; accent: hx.teal
-                        desc: I18n.tr("prowl-agent code intelligence - cited answers over your repos.")
+                        width: fnGrid.cellW; index: "06"; kanji: "\u7f85\u91dd"; name: I18n.tr("CODE"); accent: hx.teal
+                        desc: I18n.tr("Code intelligence: cited answers over your repos.")
+                    }
+                }
+            }
+
+            // ── YOUR AGENTS: one-click wire any coding CLI to the vault ───────
+            Column {
+                width: parent.width
+                spacing: Tokens.s4
+                Head { kanji: "\u4e94\u4eba\u8846"; title: I18n.tr("YOUR AGENTS") }
+                Text {
+                    width: parent.width
+                    text: I18n.tr("Wire any coding agent to the same living map of this machine. One click drops a pointer into its instructions, links the ryoku skill, and installs prowl's code-intelligence skill.")
+                    color: hx.inkDim; font.family: pg.fMono; font.pixelSize: 12; wrapMode: Text.WordWrap; lineHeight: 1.4
+                }
+                Column {
+                    width: parent.width
+                    spacing: Tokens.s2
+                    Repeater {
+                        model: pg.agentList
+                        delegate: AgentRow {
+                            required property var modelData
+                            width: parent.width
+                            agent: modelData
+                            canChat: pg.agentCanChat(modelData.id)
+                        }
+                    }
+                }
+                PosterBtn { label: I18n.tr("WIRE ALL PRESENT"); on: pg.installed; onAct: pg.wireAll() }
+            }
+
+            // ── POINT ANY AGENT: the paths, and a paste snippet for the rest ──
+            Column {
+                width: parent.width
+                spacing: Tokens.s4
+                Head { kanji: "\u9023\u643a"; title: I18n.tr("POINT ANY AGENT") }
+                Text {
+                    width: parent.width
+                    text: I18n.tr("On an agent Rashin doesn't wire for you? Point it at these yourself, or copy the ready-made instructions and paste them into its config.")
+                    color: hx.inkDim; font.family: pg.fMono; font.pixelSize: 12; wrapMode: Text.WordWrap; lineHeight: 1.4
+                }
+                Column {
+                    width: parent.width
+                    spacing: Tokens.s2
+                    PathRow { label: I18n.tr("skill"); path: pg.skillPath; owner: I18n.tr("read-only"); ok: pg.skillPath !== "" }
+                    PathRow { label: I18n.tr("prowl"); path: pg.prowlPath; owner: I18n.tr("tool"); ok: pg.prowlPath !== "" }
+                    Repeater {
+                        model: pg.vaultItems
+                        delegate: PathRow {
+                            required property var modelData
+                            width: parent.width
+                            label: modelData.label
+                            path: modelData.path
+                            owner: modelData.owner
+                            ok: modelData.exists === true
+                        }
+                    }
+                }
+                PosterBtn { label: I18n.tr("COPY AGENT SNIPPET"); primary: true; on: pg.installed; onAct: pg.copySnippet() }
+            }
+
+            // ── CHAT BACKEND: who answers Super+S (Hermes recommended) ────────
+            Column {
+                width: parent.width
+                spacing: Tokens.s3
+                Head { kanji: "\u5bfe\u8a71"; title: I18n.tr("CHAT BACKEND") }
+                Text {
+                    width: parent.width
+                    text: I18n.tr("Which agent answers the Super+S chat. Hermes is recommended; others need their own ACP adapter installed.")
+                    color: hx.inkDim; font.family: pg.fMono; font.pixelSize: 12; wrapMode: Text.WordWrap; lineHeight: 1.4
+                }
+                Flow {
+                    width: parent.width
+                    spacing: Tokens.s2
+                    Repeater {
+                        model: pg.chatBackends
+                        delegate: Rectangle {
+                            id: cb
+                            required property var modelData
+                            readonly property bool sel: cb.modelData.active === true
+                            height: 34
+                            width: cbT.implicitWidth + Tokens.s4 * 2
+                            color: cb.sel ? hx.ink : "transparent"
+                            opacity: cb.modelData.available ? 1 : 0.45
+                            border.width: 1
+                            border.color: cb.sel ? hx.ink : hx.line
+                            Text {
+                                id: cbT
+                                anchors.centerIn: parent
+                                text: (cb.modelData.name || cb.modelData.id) + (cb.modelData.recommended ? "  \u2605" : "")
+                                color: cb.sel ? hx.paper : (cb.modelData.available ? hx.ink : hx.inkDim)
+                                font.family: pg.fMono; font.pixelSize: 11; font.letterSpacing: 1
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                enabled: cb.modelData.available === true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: pg.useChatAgent(cb.modelData.id)
+                            }
+                        }
                     }
                 }
             }
@@ -534,7 +783,7 @@ Item {
                 TryRow { cmd: "hermes gateway"; note: I18n.tr("connect Telegram / Discord / WhatsApp / Slack") }
                 TryRow { cmd: "hermes model"; note: I18n.tr("switch the default model") }
                 TryRow { cmd: "hermes tools"; note: I18n.tr("enable toolsets") }
-                TryRow { cmd: "prowl-agent overview"; note: I18n.tr("code intelligence on any repo") }
+                TryRow { cmd: "prowl overview"; note: I18n.tr("code intelligence on any repo") }
             }
 
             // ── SET UP + DASHBOARD: the controls ─────────────────────────────
@@ -545,9 +794,7 @@ Item {
 
                 Text {
                     width: parent.width
-                    text: I18n.tr("Set up Hermes once: it installs the agent if you don't have it, wires it to the ")
-                        + I18n.tr("vault, and points your other coding agents at the same map. An existing Hermes install ")
-                        + I18n.tr("is left untouched.")
+                    text: I18n.tr("Set up Hermes once: it installs the agent if you don't have it, wires it to the vault, and points your other coding agents at the same map. An existing Hermes install is left untouched.")
                     color: hx.inkDim; font.family: pg.fMono; font.pixelSize: 12; wrapMode: Text.WordWrap; lineHeight: 1.4
                 }
 
